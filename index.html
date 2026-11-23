@@ -2,7 +2,13 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#050811" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="寶貝仔5.5歲生日" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%230f172a'/%3E%3Ccircle cx='90' cy='90' r='54' fill='%23f97316' stroke='%23facc15' stroke-width='6'/%3E%3Cpath d='M36 90h108M90 36v108M48 52c22 18 22 58 0 76M132 52c-22 18-22 58 0 76' fill='none' stroke='%231e293b' stroke-width='5'/%3E%3C/svg%3E" />
   <title>寶貝仔5.5歲生日</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -18,9 +24,91 @@
     let db = null;
     let auth = null;
     let currentUserId = null;
+    const LOCAL_STORAGE_KEY = "eian_5_5_birthday_bball_progress_v1";
+
+    function loadSavedProgressFromLocal() {
+      try {
+        if (typeof localStorage === "undefined") return;
+        const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (!data || typeof data !== "object") return;
+
+        if (Array.isArray(data.unlockedIds) && data.unlockedIds.length > 0) {
+          const validIds = data.unlockedIds
+            .map((id) => Number(id))
+            .filter((id) => Number.isInteger(id) && id >= 1 && id <= 1025);
+          if (validIds.length > 0) {
+            const existingSet = window.unlockedPokemonIds || new Set(window.INITIAL_UNLOCKED_IDS || []);
+            window.unlockedPokemonIds = new Set([
+              ...(window.INITIAL_UNLOCKED_IDS || []),
+              ...existingSet,
+              ...validIds
+            ]);
+          }
+        }
+
+        if (Array.isArray(data.selectedHomeIds) && data.selectedHomeIds.length > 0) {
+          const validSelected = data.selectedHomeIds
+            .map((id) => Number(id))
+            .filter((id) => (window.unlockedPokemonIds || new Set()).has(id))
+            .slice(0, 3);
+          if (validSelected.length > 0) {
+            window.selectedHomeIds = validSelected;
+          }
+        }
+
+        if (data.matchRecord && typeof data.matchRecord === "object") {
+          const prevRec = window.matchRecord || {
+            bestHomeScore: 0,
+            bestGoalDiff: -999,
+            wins: 0,
+            matchesPlayed: 0
+          };
+          const localScore = Number(data.matchRecord.bestHomeScore) || 0;
+          const localDiff = Number.isFinite(Number(data.matchRecord.bestGoalDiff)) ? Number(data.matchRecord.bestGoalDiff) : -999;
+          const localWins = Number(data.matchRecord.wins) || 0;
+          const localPlayed = Number(data.matchRecord.matchesPlayed) || 0;
+          const prevDiff = Number.isFinite(Number(prevRec.bestGoalDiff)) ? Number(prevRec.bestGoalDiff) : -999;
+
+          window.matchRecord = {
+            bestHomeScore: Math.max(Number(prevRec.bestHomeScore) || 0, localScore),
+            bestGoalDiff: Math.max(prevDiff, localDiff),
+            wins: Math.max(Number(prevRec.wins) || 0, localWins),
+            matchesPlayed: Math.max(Number(prevRec.matchesPlayed) || 0, localPlayed)
+          };
+          if (typeof window.syncMatchRecordUI === "function") {
+            window.syncMatchRecordUI();
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load progress from localStorage:", err);
+      }
+    }
+
+    function saveProgressToLocal(unlockedArray, selectedArray, recordObj) {
+      try {
+        if (typeof localStorage === "undefined") return;
+        localStorage.setItem(
+          LOCAL_STORAGE_KEY,
+          JSON.stringify({
+            unlockedIds: unlockedArray,
+            selectedHomeIds: selectedArray,
+            matchRecord: recordObj,
+            updatedAt: Date.now()
+          })
+        );
+      } catch (err) {
+        console.error("Failed to save progress to localStorage:", err);
+      }
+    }
 
     async function initProgressStorage() {
       try {
+        loadSavedProgressFromLocal();
+        if (typeof window.renderHomeScreen === "function") {
+          window.renderHomeScreen();
+        }
         if (!firebaseConfigRaw) return;
         const firebaseConfig = JSON.parse(firebaseConfigRaw);
         const app = initializeApp(firebaseConfig);
@@ -55,14 +143,19 @@
             .map((id) => Number(id))
             .filter((id) => Number.isInteger(id) && id >= 1 && id <= 1025);
           if (validIds.length > 0) {
-            window.unlockedPokemonIds = new Set([...window.INITIAL_UNLOCKED_IDS, ...validIds]);
+            const existingSet = window.unlockedPokemonIds || new Set(window.INITIAL_UNLOCKED_IDS || []);
+            window.unlockedPokemonIds = new Set([
+              ...(window.INITIAL_UNLOCKED_IDS || []),
+              ...existingSet,
+              ...validIds
+            ]);
           }
         }
 
         if (Array.isArray(data.selectedHomeIds) && data.selectedHomeIds.length > 0) {
           const validSelected = data.selectedHomeIds
             .map((id) => Number(id))
-            .filter((id) => window.unlockedPokemonIds.has(id))
+            .filter((id) => (window.unlockedPokemonIds || new Set()).has(id))
             .slice(0, 3);
           if (validSelected.length > 0) {
             window.selectedHomeIds = validSelected;
@@ -70,11 +163,23 @@
         }
 
         if (data.matchRecord && typeof data.matchRecord === "object") {
+          const prevRec = window.matchRecord || {
+            bestHomeScore: 0,
+            bestGoalDiff: -999,
+            wins: 0,
+            matchesPlayed: 0
+          };
+          const cloudScore = Number(data.matchRecord.bestHomeScore) || 0;
+          const cloudDiff = Number.isFinite(Number(data.matchRecord.bestGoalDiff)) ? Number(data.matchRecord.bestGoalDiff) : -999;
+          const cloudWins = Number(data.matchRecord.wins) || 0;
+          const cloudPlayed = Number(data.matchRecord.matchesPlayed) || 0;
+          const prevDiff = Number.isFinite(Number(prevRec.bestGoalDiff)) ? Number(prevRec.bestGoalDiff) : -999;
+
           window.matchRecord = {
-            bestHomeScore: Number(data.matchRecord.bestHomeScore) || 0,
-            bestGoalDiff: Number.isFinite(Number(data.matchRecord.bestGoalDiff)) ? Number(data.matchRecord.bestGoalDiff) : -999,
-            wins: Number(data.matchRecord.wins) || 0,
-            matchesPlayed: Number(data.matchRecord.matchesPlayed) || 0
+            bestHomeScore: Math.max(Number(prevRec.bestHomeScore) || 0, cloudScore),
+            bestGoalDiff: Math.max(prevDiff, cloudDiff),
+            wins: Math.max(Number(prevRec.wins) || 0, cloudWins),
+            matchesPlayed: Math.max(Number(prevRec.matchesPlayed) || 0, cloudPlayed)
           };
           if (typeof window.syncMatchRecordUI === "function") {
             window.syncMatchRecordUI();
@@ -105,6 +210,13 @@
         if (selectedArray.length > 0) {
           window.selectedHomeIds = selectedArray.slice(0, 3);
         }
+        const activeRecord = window.matchRecord || {
+          bestHomeScore: 0,
+          bestGoalDiff: -999,
+          wins: 0,
+          matchesPlayed: 0
+        };
+        saveProgressToLocal(unlockedArray, window.selectedHomeIds || [], activeRecord);
 
         if (!db || !currentUserId) return;
         const progressRef = doc(db, "artifacts", appId, "users", currentUserId, "gameProgress", "main");
@@ -113,12 +225,7 @@
           {
             unlockedIds: unlockedArray,
             selectedHomeIds: window.selectedHomeIds || [],
-            matchRecord: window.matchRecord || {
-              bestHomeScore: 0,
-              bestGoalDiff: -999,
-              wins: 0,
-              matchesPlayed: 0
-            },
+            matchRecord: activeRecord,
             updatedAt: Date.now()
           },
           { merge: true }
@@ -1120,61 +1227,246 @@
         });
       }
 
+      // 新增大量真正不同的中文詞彙、量詞、反義詞與字義題目
+      const richChineseBank = [
+        { q: "「一（ ）星星」最適合填哪個量詞？", ans: "顆", w: ["張", "本"], hard: false },
+        { q: "「一（ ）月亮」最適合填哪個量詞？", ans: "輪", w: ["條", "枝"], hard: true },
+        { q: "「一（ ）彩虹」最適合填哪個量詞？", ans: "道", w: ["杯", "隻"], hard: true },
+        { q: "「一（ ）蛋糕」最適合填哪個量詞？", ans: "塊", w: ["條", "棵"], hard: false },
+        { q: "「一（ ）麵包」最適合填哪個量詞？", ans: "片", w: ["座", "隻"], hard: false },
+        { q: "「一（ ）山」最適合填哪個量詞？", ans: "座", w: ["朵", "張"], hard: false },
+        { q: "「一（ ）河」最適合填哪個量詞？", ans: "條", w: ["顆", "本"], hard: false },
+        { q: "「一（ ）衣服」最適合填哪個量詞？", ans: "件", w: ["杯", "條"], hard: false },
+        { q: "「一（ ）褲子」最適合填哪個量詞？", ans: "條", w: ["朵", "本"], hard: false },
+        { q: "「一（ ）鞋子」最適合填哪個量詞？", ans: "雙", w: ["杯", "棵"], hard: false },
+        { q: "「一（ ）襪子」最適合填哪個量詞？", ans: "雙", w: ["張", "座"], hard: false },
+        { q: "「一（ ）糖果」最適合填哪個量詞？", ans: "顆", w: ["條", "本"], hard: false },
+        { q: "「一（ ）信」最適合填哪個量詞？", ans: "封", w: ["朵", "隻"], hard: true },
+        { q: "「一（ ）歌」最適合填哪個量詞？", ans: "首", w: ["張", "塊"], hard: true },
+        { q: "「一（ ）畫」最適合填哪個量詞？", ans: "幅", w: ["杯", "隻"], hard: true },
+        { q: "「一（ ）門」最適合填哪個量詞？", ans: "扇", w: ["條", "顆"], hard: true },
+        { q: "「一（ ）窗」最適合填哪個量詞？", ans: "扇", w: ["本", "隻"], hard: true },
+        { q: "「一（ ）椅子」最適合填哪個量詞？", ans: "把", w: ["朵", "條"], hard: false },
+        { q: "「一（ ）桌子」最適合填哪個量詞？", ans: "張", w: ["隻", "顆"], hard: false },
+        { q: "「一（ ）狗」最適合填哪個量詞？", ans: "隻", w: ["張", "本"], hard: false },
+        { q: "「一（ ）馬」最適合填哪個量詞？", ans: "匹", w: ["朵", "杯"], hard: true },
+        { q: "「一（ ）牛」最適合填哪個量詞？", ans: "頭", w: ["張", "本"], hard: true },
+        { q: "「一（ ）蝴蝶」最適合填哪個量詞？", ans: "隻", w: ["杯", "座"], hard: false },
+        { q: "「一（ ）蜜蜂」最適合填哪個量詞？", ans: "隻", w: ["本", "張"], hard: false },
+        { q: "「冷清」的反義詞是什麼？", ans: "熱鬧", w: ["安靜", "空曠"], hard: true },
+        { q: "「虛心」的反義詞是什麼？", ans: "驕傲", w: ["認真", "誠實"], hard: true },
+        { q: "「勇敢」的反義詞是什麼？", ans: "膽小", w: ["堅強", "聰明"], hard: false },
+        { q: "「誠實」的反義詞是什麼？", ans: "說謊", w: ["友善", "努力"], hard: true },
+        { q: "「白天」的相反詞是什麼？", ans: "黑夜", w: ["清晨", "中午"], hard: false },
+        { q: "「出發」的反義詞是什麼？", ans: "到達", w: ["起跑", "走路"], hard: true },
+        { q: "「勝利」的反義詞是什麼？", ans: "失敗", w: ["加油", "歡呼"], hard: false },
+        { q: "「上升」的反義詞是什麼？", ans: "下降", w: ["飛起", "前進"], hard: false },
+        { q: "「甜」的反義詞是什麼？", ans: "苦", w: ["香", "軟"], hard: false },
+        { q: "「軟」的反義詞是什麼？", ans: "硬", w: ["輕", "薄"], hard: false },
+        { q: "「厚」的反義詞是什麼？", ans: "薄", w: ["粗", "短"], hard: false },
+        { q: "「粗」的反義詞是什麼？", ans: "細", w: ["高", "寬"], hard: false },
+        { q: "「明亮」的反義詞是什麼？", ans: "昏暗", w: ["溫暖", "晴朗"], hard: true },
+        { q: "「乾淨」的反義詞是什麼？", ans: "骯髒", w: ["整齊", "清爽"], hard: false },
+        { q: "「快樂」的近義詞是什麼？", ans: "高興", w: ["生氣", "害怕"], hard: false },
+        { q: "「美麗」的近義詞是什麼？", ans: "漂亮", w: ["吵鬧", "疲倦"], hard: false }
+      ];
+      richChineseBank.forEach((item) => {
+        pushUniqueQuestion({
+          subject: "中文",
+          difficulty: item.hard ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, ...item.w],
+          answer: item.ans
+        });
+      });
+
+      // 新增大量真正不同的英文詞彙與生活問答
+      const richEnglishBank = [
+        { q: "What color is a lemon?", ans: "Yellow", w: ["Purple", "Brown"], hard: false },
+        { q: "What color is a grape?", ans: "Purple", w: ["Orange", "White"], hard: false },
+        { q: "What color is a bear?", ans: "Brown", w: ["Pink", "Yellow"], hard: false },
+        { q: "What color is a pig?", ans: "Pink", w: ["Blue", "Black"], hard: false },
+        { q: "What color is coal?", ans: "Black", w: ["White", "Green"], hard: false },
+        { q: "Which animal can hop and loves carrots?", ans: "Rabbit", w: ["Frog", "Fish"], hard: false },
+        { q: "Which animal is the king of the jungle?", ans: "Lion", w: ["Duck", "Mouse"], hard: false },
+        { q: "Which animal has a very long trunk?", ans: "Elephant", w: ["Cat", "Bird"], hard: false },
+        { q: "Which animal swims in the water?", ans: "Fish", w: ["Dog", "Horse"], hard: false },
+        { q: "Which animal can fly in the sky?", ans: "Bird", w: ["Cow", "Pig"], hard: false },
+        { q: "What do you use to write on paper?", ans: "Pen", w: ["Cup", "Shoe"], hard: false },
+        { q: "What do you drink water from?", ans: "Cup", w: ["Book", "Hat"], hard: false },
+        { q: "What do you wear on your head?", ans: "Hat", w: ["Shoe", "Bag"], hard: false },
+        { q: "What do you wear on your feet?", ans: "Shoe", w: ["Book", "Apple"], hard: false },
+        { q: "What do you carry books in?", ans: "Bag", w: ["Sun", "Milk"], hard: false },
+        { q: "How many fingers are on one hand?", ans: "Five", w: ["Three", "Eight"], hard: false },
+        { q: "How many days are in a week?", ans: "Seven", w: ["Five", "Ten"], hard: true },
+        { q: "What comes after Five?", ans: "Six", w: ["Four", "Seven"], hard: false },
+        { q: "What comes after Eight?", ans: "Nine", w: ["Seven", "Ten"], hard: false },
+        { q: "What comes before Two?", ans: "One", w: ["Three", "Four"], hard: false },
+        { q: "What is 'Hello' used for?", ans: "Greeting", w: ["Sleeping", "Eating"], hard: true },
+        { q: "What do you say when someone helps you?", ans: "Thank you", w: ["Good night", "Goodbye"], hard: true },
+        { q: "What do you say before going to sleep?", ans: "Good night", w: ["Good morning", "Hello"], hard: true },
+        { q: "What do you say when leaving?", ans: "Goodbye", w: ["Please", "Apple"], hard: false },
+        { q: "Which one is a part of your face?", ans: "Nose", w: ["Shoe", "Ball"], hard: false },
+        { q: "Which one helps you hear sounds?", ans: "Ear", w: ["Hand", "Foot"], hard: false },
+        { q: "Which one do you use to smile and talk?", ans: "Mouth", w: ["Knee", "Elbow"], hard: false },
+        { q: "Which fruit is yellow and curved?", ans: "Banana", w: ["Grape", "Cherry"], hard: false },
+        { q: "Which fruit is round and often red?", ans: "Apple", w: ["Lemon", "Pear"], hard: false },
+        { q: "What shines brightly in the daytime?", ans: "Sun", w: ["Moon", "Star"], hard: false }
+      ];
+      richEnglishBank.forEach((item) => {
+        pushUniqueQuestion({
+          subject: "英文",
+          difficulty: item.hard ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, ...item.w],
+          answer: item.ans
+        });
+      });
+
+      // 新增大量真正不同的普通話聲母、韻母與拼音題目
+      const richMandarinBank = [
+        { q: "普通話「山（shān）」的聲母是什麼？", ans: "sh", w1: "s", w2: "ch", hard: true },
+        { q: "普通話「吃（chī）」的聲母是什麼？", ans: "ch", w1: "c", w2: "sh", hard: true },
+        { q: "普通話「熱（rè）」的聲母是什麼？", ans: "r", w1: "l", w2: "z", hard: true },
+        { q: "普通話「字（zì）」的聲母是什麼？", ans: "z", w1: "zh", w2: "c", hard: true },
+        { q: "普通話「詞（cí）」的聲母是什麼？", ans: "c", w1: "ch", w2: "s", hard: true },
+        { q: "普通話「思（sī）」的聲母是什麼？", ans: "s", w1: "sh", w2: "z", hard: true },
+        { q: "普通話「居（jū）」的聲母是什麼？", ans: "j", w1: "q", w2: "x", hard: true },
+        { q: "普通話「去（qù）」的聲母是什麼？", ans: "q", w1: "j", w2: "x", hard: true },
+        { q: "普通話「西（xī）」的聲母是什麼？", ans: "x", w1: "j", w2: "q", hard: true },
+        { q: "普通話「羊（yáng）」的韻母是什麼？", ans: "ang", w1: "an", w2: "eng", hard: true },
+        { q: "普通話「星（xīng）」的韻母是什麼？", ans: "ing", w1: "in", w2: "eng", hard: true },
+        { q: "普通話「紅（hóng）」的韻母是什麼？", ans: "ong", w1: "ou", w2: "ang", hard: true },
+        { q: "普通話「雲（yún）」的韻母是什麼？", ans: "ün", w1: "un", w2: "in", hard: true },
+        { q: "普通話「桌（zhuō）」的韻母是什麼？", ans: "uo", w1: "o", w2: "ou", hard: true },
+        { q: "普通話「鞋（xié）」的韻母是什麼？", ans: "ie", w1: "ei", w2: "ai", hard: true },
+        { q: "普通話「約（yuē）」的韻母是什麼？", ans: "üe", w1: "ue", w2: "ie", hard: true },
+        { q: "普通話「快（kuài）」的韻母是什麼？", ans: "uai", w1: "ai", w2: "ui", hard: true },
+        { q: "普通話「船（chuán）」的韻母是什麼？", ans: "uan", w1: "an", w2: "ang", hard: true },
+        { q: "普通話「光（guāng）」的韻母是什麼？", ans: "uang", w1: "ang", w2: "ong", hard: true },
+        { q: "普通話「球（qiú）」的韻母是什麼？", ans: "iu", w1: "ui", w2: "ou", hard: true },
+        { q: "普通話「杯（bēi）」的韻母是什麼？", ans: "ei", w1: "ai", w2: "ie", hard: false },
+        { q: "普通話「刀（dāo）」的韻母是什麼？", ans: "ao", w1: "ou", w2: "ai", hard: false },
+        { q: "普通話「頭（tóu）」的韻母是什麼？", ans: "ou", w1: "ao", w2: "uo", hard: false },
+        { q: "普通話「睡（shuì）」的韻母是什麼？", ans: "ui", w1: "iu", w2: "ei", hard: true }
+      ];
+      richMandarinBank.forEach((item) => {
+        pushUniqueQuestion({
+          subject: "普通話",
+          difficulty: item.hard ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, item.w1, item.w2],
+          answer: item.ans
+        });
+      });
+
+      // 產生大量真正不同的數學算式（加法、減法、乘法、比大小與缺數）
+      for (let i = 1; i <= 180; i++) {
+        const mode = i % 5;
+        if (mode === 0) {
+          const a = (i % 15) + 2;
+          const b = ((i * 3) % 12) + 1;
+          const ans = a + b;
+          pushUniqueQuestion({
+            subject: "數學",
+            difficulty: ans > 15 ? "hard" : "easy",
+            question: `${a} + ${b} 等於多少？`,
+            options: [String(ans), String(ans + 2), String(Math.max(1, ans - 1))],
+            answer: String(ans)
+          });
+        } else if (mode === 1) {
+          const b = ((i * 2) % 9) + 1;
+          const a = b + ((i % 14) + 2);
+          const ans = a - b;
+          pushUniqueQuestion({
+            subject: "數學",
+            difficulty: a > 16 ? "hard" : "easy",
+            question: `${a} 減去 ${b} 等於多少？`,
+            options: [String(ans), String(ans + 1), String(Math.max(0, ans - 2))],
+            answer: String(ans)
+          });
+        } else if (mode === 2) {
+          const m1 = ((i % 6) + 2);
+          const m2 = (((i + 2) % 5) + 2);
+          const ans = m1 * m2;
+          pushUniqueQuestion({
+            subject: "數學",
+            difficulty: "hard",
+            question: `${m1} × ${m2} = ?`,
+            options: [String(ans), String(ans + m1), String(Math.max(1, ans - m2))],
+            answer: String(ans)
+          });
+        } else if (mode === 3) {
+          const left = ((i * 5) % 28) + 3;
+          const right = ((i * 7 + 4) % 28) + 3;
+          if (left !== right) {
+            const ans = String(Math.max(left, right));
+            const other = String(Math.min(left, right));
+            pushUniqueQuestion({
+              subject: "數學",
+              difficulty: left > 18 || right > 18 ? "hard" : "easy",
+              question: `${left} 和 ${right}，哪一個數字比較大？`,
+              options: [ans, other, String(Math.abs(left - right) + 1)],
+              answer: ans
+            });
+          }
+        } else {
+          const partA = ((i % 9) + 2);
+          const partB = (((i + 4) % 9) + 2);
+          const total = partA + partB;
+          pushUniqueQuestion({
+            subject: "數學",
+            difficulty: total > 14 ? "hard" : "easy",
+            question: `（  ） + ${partB} = ${total}，括號裡應該填多少？`,
+            options: [String(partA), String(partA + 1), String(Math.max(1, partA - 1))],
+            answer: String(partA)
+          });
+        }
+      }
+
+      // 補充其餘題目至 1600 題，不加上重複字樣
       let genIndex = 1;
       const subjectsCycle = ["普通話", "英文", "中文", "數學"];
-      const mandarinPrefixes = ["請選出", "想一想，", "找一找：", "一起學：", "拼讀練習：", "聽音辨字："];
-      const englishPrefixes = ["Quick check: ", "Let's answer: ", "Look & pick: ", "Try this: ", "English fun: ", "Can you tell: "];
-      const chinesePrefixes = ["填一填：", "想一想：", "選一選：", "找一找：", "語文小測：", "詞語練習："];
-      const mathPrefixes = ["算一算：", "動腦筋：", "快算看：", "挑戰題：", "數學小達人：", "心算一下："];
-
-      while (bank.length < 800 && genIndex <= 4000) {
+      while (bank.length < 1600 && genIndex <= 8000) {
         const subj = subjectsCycle[genIndex % subjectsCycle.length];
         const isHard = genIndex % 2 === 0;
         if (subj === "普通話") {
-          const base = extraMandarin[genIndex % extraMandarin.length];
-          const prefix = mandarinPrefixes[Math.floor(genIndex / extraMandarin.length) % mandarinPrefixes.length];
-          const suffix = genIndex >= extraMandarin.length * mandarinPrefixes.length ? `（第${genIndex}題）` : "";
+          const base = richMandarinBank[genIndex % richMandarinBank.length];
           pushUniqueQuestion({
             subject: "普通話",
             difficulty: isHard ? "hard" : "easy",
-            question: `${prefix}${base.q}${suffix}`,
+            question: base.q,
             options: [base.ans, base.w1, base.w2],
             answer: base.ans
           });
         } else if (subj === "英文") {
-          const base = extraEnglish[genIndex % extraEnglish.length];
-          const prefix = englishPrefixes[Math.floor(genIndex / extraEnglish.length) % englishPrefixes.length];
-          const suffix = genIndex >= extraEnglish.length * englishPrefixes.length ? ` (#${genIndex})` : "";
+          const base = richEnglishBank[genIndex % richEnglishBank.length];
           pushUniqueQuestion({
             subject: "英文",
             difficulty: isHard ? "hard" : "easy",
-            question: `${prefix}${base.q}${suffix}`,
-            options: [base.ans, base.w[0] || "Blue", base.w[1] || "Red"],
+            question: base.q,
+            options: [base.ans, ...base.w],
             answer: base.ans
           });
         } else if (subj === "中文") {
-          const base = extraChinese[genIndex % extraChinese.length];
-          const prefix = chinesePrefixes[Math.floor(genIndex / extraChinese.length) % chinesePrefixes.length];
-          const suffix = genIndex >= extraChinese.length * chinesePrefixes.length ? `（第${genIndex}題）` : "";
+          const base = richChineseBank[genIndex % richChineseBank.length];
           pushUniqueQuestion({
             subject: "中文",
             difficulty: isHard ? "hard" : "easy",
-            question: `${prefix}${base.q}${suffix}`,
+            question: base.q,
             options: [base.ans, ...base.w],
             answer: base.ans
           });
         } else {
-          const x = (genIndex % 18) + 4;
-          const y = (genIndex % 9) + 1;
+          const x = ((genIndex * 3) % 25) + 4;
+          const y = ((genIndex * 2) % 12) + 1;
           const isSub = genIndex % 3 === 0;
           const ans = isSub ? x - y : x + y;
           const qText = isSub ? `${x} - ${y} = ?` : `${x} + ${y} = ?`;
-          const prefix = mathPrefixes[genIndex % mathPrefixes.length];
-          const suffix = genIndex >= 24 ? `（題${genIndex}）` : "";
           pushUniqueQuestion({
             subject: "數學",
             difficulty: isHard ? "hard" : "easy",
-            question: `${prefix}${qText}${suffix}`,
+            question: qText,
             options: [String(ans), String(ans + 2), String(Math.max(0, ans - 1))],
             answer: String(ans)
           });
@@ -1182,13 +1474,69 @@
         genIndex++;
       }
 
-      return bank.slice(0, 800);
+      return bank.slice(0, 1600);
     }
 
     const QUESTION_BANK = buildQuestionBank();
+    const QUESTION_ROTATION_STORAGE_KEY = "eian_5_5_birthday_bball_q_rotation_v2";
+
+    function shuffleQuestionArray(items) {
+      const arr = [...items];
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    }
+
+    const ROTATED_QUESTION_POOL = shuffleQuestionArray(QUESTION_BANK);
     const usedMatchQuestionKeys = new Set();
     const usedRecentMatchQuestionKeys = new Set();
     const usedMatchQuestionIndices = new Set();
+    let crossMatchCursor = 0;
+
+    function loadQuestionRotationState() {
+      try {
+        if (typeof localStorage === "undefined") return;
+        const raw = localStorage.getItem(QUESTION_ROTATION_STORAGE_KEY);
+        if (!raw) {
+          crossMatchCursor = Math.floor(Math.random() * Math.max(1, ROTATED_QUESTION_POOL.length));
+          return;
+        }
+        const saved = JSON.parse(raw);
+        if (saved && typeof saved === "object") {
+          if (Number.isInteger(saved.cursor) && saved.cursor >= 0) {
+            crossMatchCursor = saved.cursor % Math.max(1, ROTATED_QUESTION_POOL.length);
+          }
+          if (Array.isArray(saved.recentKeys)) {
+            saved.recentKeys.slice(-500).forEach((k) => {
+              if (typeof k === "string" && k) {
+                usedRecentMatchQuestionKeys.add(k);
+              }
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load question rotation state:", err);
+      }
+    }
+
+    function saveQuestionRotationState() {
+      try {
+        if (typeof localStorage === "undefined") return;
+        localStorage.setItem(
+          QUESTION_ROTATION_STORAGE_KEY,
+          JSON.stringify({
+            cursor: crossMatchCursor,
+            recentKeys: Array.from(usedRecentMatchQuestionKeys).slice(-500)
+          })
+        );
+      } catch (err) {
+        console.error("Failed to save question rotation state:", err);
+      }
+    }
+
+    loadQuestionRotationState();
     let scene = null;
     let camera = null;
     let renderer = null;
@@ -1261,7 +1609,13 @@
     }
 
     function getQuestionUniqueKey(q) {
-      return `${q.subject}::${q.question}`;
+      const cleanQ = String(q?.question || "")
+        .replace(/（第\d+題）|\(#\d+\)|（題\d+）/g, "")
+        .replace(/^(請選出|想一想，|找一找：|一起學：|拼讀練習：|聽音辨字：|Quick check:\s*|Let's answer:\s*|Look & pick:\s*|Try this:\s*|English fun:\s*|Can you tell:\s*|填一填：|想一想：|選一選：|語文小測：|詞語練習：|算一算：|動腦筋：|快算看：|挑戰題：|數學小達人：|心算一下：)/g, "")
+        .replace(/\s+/g, "")
+        .trim();
+      const cleanA = String(q?.answer || "").replace(/\s+/g, "").trim();
+      return `${q?.subject || ""}::${cleanQ}::${cleanA}`;
     }
 
     function pickNextQuestion(isThreePt) {
@@ -1270,63 +1624,100 @@
       const targetSubject = subjectOrder[subjectRotationIndex % subjectOrder.length];
       subjectRotationIndex++;
 
-      function filterPool(predicate) {
-        return QUESTION_BANK.filter((q) => {
-          const key = getQuestionUniqueKey(q);
-          return !usedMatchQuestionKeys.has(key) && predicate(q, key);
-        });
+      const totalBank = ROTATED_QUESTION_POOL.length;
+      if (totalBank === 0) return null;
+
+      function isUsedInCurrentMatch(q, key, idx) {
+        if (usedMatchQuestionIndices.has(idx)) return true;
+        if (usedMatchQuestionKeys.has(key)) return true;
+        const rawQ = String(q?.question || "").replace(/\s+/g, "").trim();
+        for (const usedKey of usedMatchQuestionKeys) {
+          const parts = usedKey.split("::");
+          if (parts[1] && rawQ && parts[1] === rawQ) {
+            return true;
+          }
+        }
+        return false;
       }
 
-      let candidates = filterPool(
-        (q, key) => q.subject === targetSubject && q.difficulty === desiredDiff && !usedRecentMatchQuestionKeys.has(key)
+      function findFirstRotatedIndex(predicate, allowRepeatInMatch) {
+        for (let offset = 0; offset < totalBank; offset++) {
+          const idx = (crossMatchCursor + offset) % totalBank;
+          const q = ROTATED_QUESTION_POOL[idx];
+          const key = getQuestionUniqueKey(q);
+          if (!allowRepeatInMatch && isUsedInCurrentMatch(q, key, idx)) {
+            continue;
+          }
+          if (predicate(q, key, idx)) {
+            return idx;
+          }
+        }
+        return -1;
+      }
+
+      // 嚴格優先：同一賽事內絕不重複 + 近期未出過 + 符合科目與難度
+      let chosenIdx = findFirstRotatedIndex(
+        (q, key) => q.subject === targetSubject && q.difficulty === desiredDiff && !usedRecentMatchQuestionKeys.has(key),
+        false
       );
 
-      if (candidates.length === 0) {
-        candidates = filterPool((q) => q.subject === targetSubject && q.difficulty === desiredDiff);
+      if (chosenIdx === -1) {
+        chosenIdx = findFirstRotatedIndex(
+          (q, key) => q.subject === targetSubject && !usedRecentMatchQuestionKeys.has(key),
+          false
+        );
       }
 
-      if (candidates.length === 0) {
-        candidates = filterPool((q, key) => q.subject === targetSubject && !usedRecentMatchQuestionKeys.has(key));
+      if (chosenIdx === -1) {
+        chosenIdx = findFirstRotatedIndex(
+          (q, key) => q.difficulty === desiredDiff && !usedRecentMatchQuestionKeys.has(key),
+          false
+        );
       }
 
-      if (candidates.length === 0) {
-        candidates = filterPool((q) => q.subject === targetSubject);
+      if (chosenIdx === -1) {
+        chosenIdx = findFirstRotatedIndex((_, key) => !usedRecentMatchQuestionKeys.has(key), false);
       }
 
-      if (candidates.length === 0) {
-        candidates = filterPool((q, key) => q.difficulty === desiredDiff && !usedRecentMatchQuestionKeys.has(key));
+      if (chosenIdx === -1) {
+        chosenIdx = findFirstRotatedIndex((q) => q.subject === targetSubject && q.difficulty === desiredDiff, false);
       }
 
-      if (candidates.length === 0) {
-        candidates = filterPool((q) => q.difficulty === desiredDiff);
+      if (chosenIdx === -1) {
+        chosenIdx = findFirstRotatedIndex((q) => q.subject === targetSubject, false);
       }
 
-      if (candidates.length === 0) {
-        candidates = filterPool((_, key) => !usedRecentMatchQuestionKeys.has(key));
+      if (chosenIdx === -1) {
+        chosenIdx = findFirstRotatedIndex(() => true, false);
       }
 
-      if (candidates.length === 0) {
-        candidates = QUESTION_BANK.filter((q) => !usedMatchQuestionKeys.has(getQuestionUniqueKey(q)));
-      }
-
-      if (candidates.length === 0) {
-        usedMatchQuestionKeys.clear();
+      if (chosenIdx === -1) {
+        // 僅在整份 1600 題庫皆已在同一場用完時才放寬單場限制並清空近期紀錄
         usedRecentMatchQuestionKeys.clear();
-        candidates = [...QUESTION_BANK];
+        usedMatchQuestionKeys.clear();
+        usedMatchQuestionIndices.clear();
+        chosenIdx = crossMatchCursor % totalBank;
       }
 
-      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      crossMatchCursor = (chosenIdx + 1) % totalBank;
+
+      const pick = ROTATED_QUESTION_POOL[chosenIdx];
       const pickKey = getQuestionUniqueKey(pick);
+      const rawPickKey = `${pick?.subject || ""}::${String(pick?.question || "").replace(/\s+/g, "").trim()}::${String(pick?.answer || "").replace(/\s+/g, "").trim()}`;
       usedMatchQuestionKeys.add(pickKey);
+      usedMatchQuestionKeys.add(rawPickKey);
       usedRecentMatchQuestionKeys.add(pickKey);
+      usedMatchQuestionIndices.add(chosenIdx);
 
-      if (usedRecentMatchQuestionKeys.size > 420) {
+      // 保留最近約 85% 的題目不重複，讓整批 1600 題輪流出現
+      const maxRecentWindow = Math.max(100, Math.floor(totalBank * 0.85));
+      while (usedRecentMatchQuestionKeys.size > maxRecentWindow) {
         const oldestKey = usedRecentMatchQuestionKeys.values().next().value;
-        if (oldestKey) {
-          usedRecentMatchQuestionKeys.delete(oldestKey);
-        }
+        if (!oldestKey) break;
+        usedRecentMatchQuestionKeys.delete(oldestKey);
       }
 
+      saveQuestionRotationState();
       return pick;
     }
 
@@ -2033,10 +2424,18 @@
       if (!fromHome && !isAtHomeScreen && !isGameOver && (homeScore > 0 || awayScore > 0 || matchTimeLeft < MATCH_DURATION_SECONDS)) {
         recordCompletedMatchResult();
       }
-      unlockedPokemonIds = new Set([...INITIAL_UNLOCKED_IDS, ...(window.unlockedPokemonIds || [])]);
-      window.unlockedPokemonIds = unlockedPokemonIds;
+      const latestUnlocked = new Set([
+        ...INITIAL_UNLOCKED_IDS,
+        ...unlockedPokemonIds,
+        ...(window.unlockedPokemonIds || [])
+      ]);
+      unlockedPokemonIds = latestUnlocked;
+      window.unlockedPokemonIds = latestUnlocked;
 
-      const validSelected = (selectedHomeIds || []).filter((id) => unlockedPokemonIds.has(id));
+      const latestSelected = Array.isArray(window.selectedHomeIds) && window.selectedHomeIds.length > 0
+        ? window.selectedHomeIds
+        : selectedHomeIds;
+      const validSelected = (latestSelected || []).filter((id) => unlockedPokemonIds.has(id));
       if (validSelected.length === 3) {
         selectedHomeIds = validSelected;
       } else {
@@ -2057,7 +2456,8 @@
       awayScore = 0;
       usedMatchQuestionKeys.clear();
       usedMatchQuestionIndices.clear();
-      subjectRotationIndex = 0;
+      saveQuestionRotationState();
+      subjectRotationIndex = Math.floor(Math.random() * 4);
       opponentStealTimer = 0;
 
       document.getElementById("home-screen").classList.remove("active");
@@ -2123,89 +2523,93 @@
     }
 
     function renderHomeScreen() {
-      unlockedPokemonIds = new Set([...INITIAL_UNLOCKED_IDS, ...(window.unlockedPokemonIds || [])]);
-      window.unlockedPokemonIds = unlockedPokemonIds;
-      window.selectedHomeIds = selectedHomeIds;
+      try {
+        unlockedPokemonIds = new Set([...INITIAL_UNLOCKED_IDS, ...(window.unlockedPokemonIds || [])]);
+        window.unlockedPokemonIds = unlockedPokemonIds;
+        window.selectedHomeIds = selectedHomeIds;
 
-      const counterEl = document.getElementById("home-unlock-counter");
-      const selCountEl = document.getElementById("home-selected-count");
-      const slotsEl = document.getElementById("home-selected-slots");
-      const gridEl = document.getElementById("home-roster-grid");
+        const counterEl = document.getElementById("home-unlock-counter");
+        const selCountEl = document.getElementById("home-selected-count");
+        const slotsEl = document.getElementById("home-selected-slots");
+        const gridEl = document.getElementById("home-roster-grid");
 
-      if (counterEl) counterEl.textContent = `${unlockedPokemonIds.size}/1025`;
-      if (selCountEl) selCountEl.textContent = `(${selectedHomeIds.length}/3)`;
-      syncMatchRecordUI();
+        if (counterEl) counterEl.textContent = `${unlockedPokemonIds.size}/1025`;
+        if (selCountEl) selCountEl.textContent = `(${selectedHomeIds.length}/3)`;
+        syncMatchRecordUI();
 
-      if (slotsEl) {
-        slotsEl.innerHTML = "";
-        for (let i = 0; i < 3; i++) {
-          const pid = selectedHomeIds[i];
-          const spec = pid ? POKEMON_MAP.get(pid) : null;
-          const card = document.createElement("div");
-          card.className = "p-3 rounded-2xl bg-slate-900/90 border border-amber-400/35 flex items-center gap-3";
-          if (spec) {
-            card.innerHTML = `
-              <span class="px-2 py-0.5 rounded-lg text-xs font-black bg-amber-400 text-slate-950">#${i + 1}</span>
-              <img src="${spec.sprite}" alt="${spec.name}" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-11 h-11 object-contain" />
-              <div class="min-w-0">
-                <div class="text-sm font-extrabold text-white truncate">${spec.name}</div>
-                <div class="text-xs text-slate-400">${spec.dexNo}</div>
-              </div>
-            `;
-            if (!KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
-              hydratePokemonNames([spec.id]);
-            }
-          } else {
-            card.innerHTML = `
-              <span class="px-2 py-0.5 rounded-lg text-xs font-black bg-slate-700 text-slate-300">#${i + 1}</span>
-              <div class="text-xs text-slate-400">未選擇</div>
-            `;
-          }
-          slotsEl.appendChild(card);
-        }
-      }
-
-      if (gridEl) {
-        gridEl.innerHTML = "";
-        const sortedCatalog = [...POKEMON_CATALOG].sort((a, b) => {
-          const aUn = unlockedPokemonIds.has(a.id) ? 0 : 1;
-          const bUn = unlockedPokemonIds.has(b.id) ? 0 : 1;
-          if (aUn !== bUn) return aUn - bUn;
-          return a.id - b.id;
-        });
-
-        for (const spec of sortedCatalog) {
-          const isUnlocked = unlockedPokemonIds.has(spec.id);
-          const isSelected = selectedHomeIds.includes(spec.id);
-          const item = document.createElement("button");
-          item.type = "button";
-          item.className = `pokemon-card p-3 flex flex-col items-center text-center gap-1.5 ${
-            !isUnlocked ? "locked-card" : ""
-          } ${isSelected ? "selected-home" : ""}`;
-
-          item.innerHTML = `
-            <div class="w-full flex items-center justify-between text-[11px] font-bold">
-              <span class="text-slate-400">${spec.dexNo}</span>
-              ${
-                isSelected
-                  ? `<span class="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-black">出賽</span>`
-                  : isUnlocked
-                  ? `<span class="text-emerald-400">已解鎖</span>`
-                  : `<span class="text-slate-500">未解鎖</span>`
+        if (slotsEl) {
+          slotsEl.innerHTML = "";
+          for (let i = 0; i < 3; i++) {
+            const pid = selectedHomeIds[i];
+            const spec = pid ? POKEMON_MAP.get(pid) : null;
+            const card = document.createElement("div");
+            card.className = "p-3 rounded-2xl bg-slate-900/90 border border-amber-400/35 flex items-center gap-3";
+            if (spec) {
+              card.innerHTML = `
+                <span class="px-2 py-0.5 rounded-lg text-xs font-black bg-amber-400 text-slate-950">#${i + 1}</span>
+                <img src="${spec.sprite}" alt="${spec.name}" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-11 h-11 object-contain" />
+                <div class="min-w-0">
+                  <div class="text-sm font-extrabold text-white truncate">${spec.name}</div>
+                  <div class="text-xs text-slate-400">${spec.dexNo}</div>
+                </div>
+              `;
+              if (!KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
+                hydratePokemonNames([spec.id]);
               }
-            </div>
-            <img src="${spec.sprite}" alt="${spec.name}" loading="lazy" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-16 h-16 object-contain ${!isUnlocked ? "grayscale brightness-50" : ""}" />
-            <div class="text-xs font-extrabold text-white line-clamp-1">${isUnlocked ? spec.name : spec.dexNo}</div>
-          `;
-
-          if (isUnlocked) {
-            item.addEventListener("click", () => toggleSelectHomePokemon(spec.id));
-            if (!KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
-              hydratePokemonNames([spec.id]);
+            } else {
+              card.innerHTML = `
+                <span class="px-2 py-0.5 rounded-lg text-xs font-black bg-slate-700 text-slate-300">#${i + 1}</span>
+                <div class="text-xs text-slate-400">未選擇</div>
+              `;
             }
+            slotsEl.appendChild(card);
           }
-          gridEl.appendChild(item);
         }
+
+        if (gridEl) {
+          gridEl.innerHTML = "";
+          const sortedCatalog = [...POKEMON_CATALOG].sort((a, b) => {
+            const aUn = unlockedPokemonIds.has(a.id) ? 0 : 1;
+            const bUn = unlockedPokemonIds.has(b.id) ? 0 : 1;
+            if (aUn !== bUn) return aUn - bUn;
+            return a.id - b.id;
+          });
+
+          for (const spec of sortedCatalog) {
+            const isUnlocked = unlockedPokemonIds.has(spec.id);
+            const isSelected = selectedHomeIds.includes(spec.id);
+            const item = document.createElement("button");
+            item.type = "button";
+            item.className = `pokemon-card p-3 flex flex-col items-center text-center gap-1.5 ${
+              !isUnlocked ? "locked-card" : ""
+            } ${isSelected ? "selected-home" : ""}`;
+
+            item.innerHTML = `
+              <div class="w-full flex items-center justify-between text-[11px] font-bold">
+                <span class="text-slate-400">${spec.dexNo}</span>
+                ${
+                  isSelected
+                    ? `<span class="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-black">出賽</span>`
+                    : isUnlocked
+                    ? `<span class="text-emerald-400">已解鎖</span>`
+                    : `<span class="text-slate-500">未解鎖</span>`
+                }
+              </div>
+              <img src="${spec.sprite}" alt="${spec.name}" loading="lazy" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-16 h-16 object-contain ${!isUnlocked ? "grayscale brightness-50" : ""}" />
+              <div class="text-xs font-extrabold text-white truncate w-full">${isUnlocked ? spec.name : spec.dexNo}</div>
+            `;
+
+            if (isUnlocked) {
+              item.addEventListener("click", () => toggleSelectHomePokemon(spec.id));
+              if (!KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
+                hydratePokemonNames([spec.id]);
+              }
+            }
+            gridEl.appendChild(item);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to render home screen:", err);
       }
     }
 
@@ -2565,7 +2969,7 @@
     window.renderHomeScreen = renderHomeScreen;
     window.openDexModal = openDexModal;
 
-    window.addEventListener("DOMContentLoaded", () => {
+    function bootHomeAndGame() {
       initScene();
       spawnTeamPlayers();
       renderHomeScreen();
@@ -2574,7 +2978,13 @@
       bindEvents();
       lastFrameTime = performance.now();
       requestAnimationFrame(animate);
-    });
+    }
+
+    if (document.readyState === "loading") {
+      window.addEventListener("DOMContentLoaded", bootHomeAndGame);
+    } else {
+      bootHomeAndGame();
+    }
   </script>
 </body>
 </html>
