@@ -1,0 +1,2481 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>寶貝仔5.5歲生日</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    const appId = typeof __app_id !== "undefined" ? __app_id : "default-app-id";
+    const firebaseConfigRaw = typeof __firebase_config !== "undefined" ? __firebase_config : "";
+    const initialAuthToken = typeof __initial_auth_token !== "undefined" ? __initial_auth_token : "";
+
+    let db = null;
+    let auth = null;
+    let currentUserId = null;
+
+    async function initProgressStorage() {
+      try {
+        if (!firebaseConfigRaw) return;
+        const firebaseConfig = JSON.parse(firebaseConfigRaw);
+        const app = initializeApp(firebaseConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+
+        if (initialAuthToken) {
+          await signInWithCustomToken(auth, initialAuthToken);
+        } else {
+          await signInAnonymously(auth);
+        }
+
+        currentUserId = auth.currentUser?.uid || null;
+        if (!currentUserId) return;
+
+        await loadSavedProgressFromCloud();
+      } catch (err) {
+        console.error("Failed to initialize progress storage:", err);
+      }
+    }
+
+    async function loadSavedProgressFromCloud() {
+      try {
+        if (!db || !currentUserId) return;
+        const progressRef = doc(db, "artifacts", appId, "users", currentUserId, "gameProgress", "main");
+        const snap = await getDoc(progressRef);
+        if (!snap.exists()) return;
+
+        const data = snap.data() || {};
+        if (Array.isArray(data.unlockedIds) && data.unlockedIds.length > 0) {
+          const validIds = data.unlockedIds
+            .map((id) => Number(id))
+            .filter((id) => Number.isInteger(id) && id >= 1 && id <= 1025);
+          if (validIds.length > 0) {
+            window.unlockedPokemonIds = new Set([...window.INITIAL_UNLOCKED_IDS, ...validIds]);
+          }
+        }
+
+        if (Array.isArray(data.selectedHomeIds) && data.selectedHomeIds.length > 0) {
+          const validSelected = data.selectedHomeIds
+            .map((id) => Number(id))
+            .filter((id) => window.unlockedPokemonIds.has(id))
+            .slice(0, 3);
+          if (validSelected.length > 0) {
+            window.selectedHomeIds = validSelected;
+          }
+        }
+
+        if (typeof window.renderHomeScreen === "function") {
+          window.renderHomeScreen();
+        }
+      } catch (err) {
+        console.error("Failed to load saved progress:", err);
+      }
+    }
+
+    async function saveProgressToCloud() {
+      try {
+        if (!db || !currentUserId) return;
+        const progressRef = doc(db, "artifacts", appId, "users", currentUserId, "gameProgress", "main");
+        await setDoc(
+          progressRef,
+          {
+            unlockedIds: Array.from(window.unlockedPokemonIds || []),
+            selectedHomeIds: Array.from(window.selectedHomeIds || []),
+            updatedAt: Date.now()
+          },
+          { merge: true }
+        );
+      } catch (err) {
+        console.error("Failed to save progress:", err);
+      }
+    }
+
+    window.saveGameProgress = saveProgressToCloud;
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", initProgressStorage);
+    } else {
+      initProgressStorage();
+    }
+  </script>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background-color: #050811;
+      color: #f8fafc;
+      font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+
+    #game-viewport {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 20%, #172554 0%, #090d1a 65%, #050811 100%);
+    }
+
+    #three-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #home-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 40;
+      display: none;
+      flex-direction: column;
+      background: linear-gradient(180deg, rgba(10, 15, 32, 0.96) 0%, rgba(5, 8, 17, 0.99) 100%);
+      overflow-y: auto;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    #home-screen.active {
+      display: flex;
+    }
+
+    #hud-layer {
+      position: absolute;
+      inset: 0;
+      z-index: 15;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    }
+
+    .hud-interactive {
+      pointer-events: auto;
+    }
+
+    .glass-panel {
+      background: rgba(15, 23, 42, 0.82);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 16px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.45);
+    }
+
+    #joystick-zone {
+      position: relative;
+      width: 124px;
+      height: 124px;
+      border-radius: 9999px;
+      background: rgba(15, 23, 42, 0.78);
+      border: 2px solid rgba(148, 163, 184, 0.35);
+      box-shadow: inset 0 0 18px rgba(2, 6, 23, 0.85), 0 8px 20px rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(8px);
+      touch-action: none;
+    }
+
+    #joystick-ring-guide {
+      position: absolute;
+      inset: 14px;
+      border-radius: 9999px;
+      border: 1px dashed rgba(148, 163, 184, 0.25);
+      pointer-events: none;
+    }
+
+    #joystick-knob {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 50px;
+      height: 50px;
+      margin-left: -25px;
+      margin-top: -25px;
+      border-radius: 9999px;
+      background: radial-gradient(circle at 32% 30%, #60a5fa, #2563eb 68%, #1d4ed8 100%);
+      border: 2px solid rgba(255, 255, 255, 0.75);
+      box-shadow: 0 6px 14px rgba(37, 99, 235, 0.55);
+      transform: translate(0px, 0px);
+      transition: transform 0.05s linear;
+      pointer-events: none;
+    }
+
+    #joystick-knob.dragging {
+      transition: none;
+      background: radial-gradient(circle at 32% 30%, #93c5fd, #3b82f6 68%, #1d4ed8 100%);
+      box-shadow: 0 0 18px rgba(96, 165, 250, 0.85);
+    }
+
+    .action-btn {
+      border-radius: 16px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      transition: transform 0.1s ease, filter 0.15s ease, background-color 0.15s ease;
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.4);
+    }
+
+    .action-btn:active {
+      transform: scale(0.94);
+      filter: brightness(1.12);
+    }
+
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      z-index: 30;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(2, 6, 23, 0.78);
+      backdrop-filter: blur(6px);
+      overflow-y: auto;
+      touch-action: pan-y;
+    }
+
+    .modal-backdrop.active {
+      display: flex;
+    }
+
+    .pokemon-card {
+      background: rgba(15, 23, 42, 0.9);
+      border: 1.5px solid rgba(148, 163, 184, 0.22);
+      border-radius: 16px;
+      transition: transform 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease;
+    }
+
+    .pokemon-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(96, 165, 250, 0.65);
+    }
+
+    .pokemon-card.selected-home {
+      border-color: #facc15;
+      box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.35), 0 10px 20px rgba(0, 0, 0, 0.4);
+      background: linear-gradient(180deg, rgba(30, 58, 138, 0.65) 0%, rgba(15, 23, 42, 0.95) 100%);
+    }
+
+    .pokemon-card.locked-card {
+      opacity: 0.65;
+      background: rgba(10, 15, 28, 0.85);
+    }
+  </style>
+</head>
+<body>
+  <div id="game-viewport">
+    <canvas id="three-canvas"></canvas>
+
+    <div id="home-screen" class="active p-4 sm:p-6">
+      <div class="max-w-5xl w-full mx-auto flex flex-col gap-4 pb-8">
+        <div class="glass-panel p-4 sm:p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-400/30 mb-2">
+              <span>🏀 寶貝仔5.5歲生日</span>
+              <span id="home-unlock-counter">3/1025</span>
+            </div>
+            <h1 class="text-2xl sm:text-3xl font-black tracking-tight text-white">
+              寶貝仔5.5歲生日
+            </h1>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button id="home-open-dex-btn" class="action-btn px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm">
+              📖 寶可夢圖鑑
+            </button>
+            <button id="home-start-match-btn" class="action-btn px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm sm:text-base">
+              ▶ 開始比賽！
+            </button>
+          </div>
+        </div>
+
+        <div class="glass-panel p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div class="text-sm font-bold text-amber-300">
+              先發主隊 <span id="home-selected-count">(3/3)</span>
+            </div>
+          </div>
+          <div id="home-selected-slots" class="grid grid-cols-1 sm:grid-cols-3 gap-2.5"></div>
+        </div>
+
+        <div class="glass-panel p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="text-base sm:text-lg font-extrabold text-white">寶可夢陣容（1～1025）</h2>
+          </div>
+          <div id="home-roster-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="hud-layer">
+      <div class="flex flex-col gap-2">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="glass-panel hud-interactive px-3 py-2 flex items-center gap-3">
+            <div class="text-center">
+              <div class="text-[10px] uppercase tracking-wider text-sky-300 font-bold">主隊</div>
+              <div id="hud-home-score" class="text-xl sm:text-2xl font-black text-white leading-none">0</div>
+            </div>
+            <div class="px-2.5 py-1 rounded-xl bg-slate-900/90 border border-slate-700 text-center">
+              <div class="text-[10px] text-slate-400 font-semibold">剩餘時間</div>
+              <div id="hud-timer" class="text-base sm:text-lg font-black text-amber-300 leading-tight">01:00</div>
+            </div>
+            <div class="text-center">
+              <div class="text-[10px] uppercase tracking-wider text-rose-300 font-bold">對手</div>
+              <div id="hud-away-score" class="text-xl sm:text-2xl font-black text-white leading-none">0</div>
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-1.5 sm:gap-2 hud-interactive">
+            <button id="btn-home-screen" class="action-btn px-3 py-2 bg-slate-800/95 hover:bg-slate-700 text-slate-100 text-xs border border-slate-600">
+              🏠 主頁選角
+            </button>
+            <button id="btn-swap-player" class="action-btn px-3 py-2 bg-sky-700/95 hover:bg-sky-600 text-white text-xs">
+              🔄 換人
+            </button>
+            <button id="btn-open-dex" class="action-btn px-3 py-2 bg-indigo-700/95 hover:bg-indigo-600 text-white text-xs">
+              📖 圖鑑
+            </button>
+            <button id="btn-restart" class="action-btn px-3 py-2 bg-amber-600/95 hover:bg-amber-500 text-slate-950 text-xs">
+              ↻ 重開
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div id="status-banner" class="glass-panel px-3.5 py-2 text-xs sm:text-sm font-bold text-sky-200">
+            01:00
+          </div>
+          <div id="move-effect-banner" class="hidden px-3.5 py-1.5 rounded-full text-xs sm:text-sm font-black bg-amber-400 text-slate-950 shadow-lg">
+          </div>
+        </div>
+      </div>
+
+      <div class="flex items-end justify-between gap-3 w-full">
+        <div class="hud-interactive flex flex-col items-center gap-1.5">
+          <div id="joystick-zone" aria-label="圓形移動控制鍵">
+            <div id="joystick-ring-guide"></div>
+            <div id="joystick-knob"></div>
+          </div>
+          <span class="text-[11px] font-bold text-slate-300 bg-slate-900/75 px-2.5 py-0.5 rounded-full border border-slate-700/70">
+            搖桿
+          </span>
+        </div>
+
+        <div class="hud-interactive flex items-center gap-2.5 sm:gap-3">
+          <button id="btn-pass-or-steal" class="action-btn px-4 sm:px-5 py-3.5 sm:py-4 bg-blue-600 hover:bg-blue-500 text-white text-sm sm:text-base">
+            🤝 傳球
+          </button>
+          <button id="btn-shoot" class="action-btn px-5 sm:px-6 py-3.5 sm:py-4 bg-gradient-to-b from-amber-400 to-orange-500 hover:from-amber-300 hover:to-orange-400 text-slate-950 text-sm sm:text-base">
+            🏀 射球
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="quiz-modal" class="modal-backdrop">
+      <div class="glass-panel max-w-lg w-full p-5 sm:p-6 flex flex-col gap-4 border border-amber-400/40">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span id="quiz-shot-badge" class="px-3 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/40">
+            2 分
+          </span>
+          <span id="quiz-subject-badge" class="px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/25 text-indigo-200 border border-indigo-400/35">
+            小一
+          </span>
+        </div>
+
+        <h3 id="quiz-question-text" class="text-lg sm:text-xl font-extrabold text-white leading-snug">
+          ...
+        </h3>
+
+        <div id="quiz-options-container" class="flex flex-col gap-2.5"></div>
+
+        <div id="quiz-wrong-feedback" class="hidden p-3.5 rounded-2xl bg-rose-950/75 border border-rose-500/50 flex flex-col gap-3">
+          <div id="quiz-correct-answer-display" class="text-sm sm:text-base font-black text-emerald-300"></div>
+          <button id="btn-ack-wrong-answer" class="action-btn self-end px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-950 text-sm">
+            繼續
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="dex-modal" class="modal-backdrop">
+      <div class="glass-panel max-w-4xl w-full max-h-[86vh] flex flex-col overflow-hidden border border-indigo-400/35">
+        <div class="p-4 sm:p-5 border-b border-slate-700/80 flex items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg sm:text-xl font-black text-white">📖 寶可夢圖鑑（1～1025）</h3>
+            <p id="dex-unlock-summary" class="text-xs sm:text-sm text-slate-300 mt-0.5">
+              3 / 1025
+            </p>
+          </div>
+          <button id="btn-close-dex" class="action-btn px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm border border-slate-600">
+            關閉
+          </button>
+        </div>
+        <div id="dex-grid" class="p-4 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+        </div>
+      </div>
+    </div>
+
+    <div id="gameover-modal" class="modal-backdrop">
+      <div class="glass-panel max-w-md w-full p-6 flex flex-col items-center text-center gap-4 border border-amber-400/40">
+        <div id="gameover-badge" class="px-3.5 py-1 rounded-full text-xs font-black bg-amber-400/20 text-amber-300 border border-amber-400/40">
+          結束
+        </div>
+        <h3 id="gameover-title" class="text-2xl sm:text-3xl font-black text-white">全場結束</h3>
+        <div id="gameover-score" class="text-xl font-extrabold text-sky-200">主隊 0 : 0 對手</div>
+        <div id="gameover-unlock-box" class="w-full p-3.5 rounded-2xl bg-slate-900/90 border border-slate-700 text-sm text-slate-200">
+        </div>
+        <div class="flex flex-wrap items-center justify-center gap-3 w-full pt-1">
+          <button id="btn-gameover-home" class="action-btn px-4 py-3 bg-slate-700 hover:bg-slate-600 text-white text-sm">
+            🏠 主頁選角
+          </button>
+          <button id="btn-gameover-rematch" class="action-btn px-5 py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-sm">
+            ▶ 再戰一場
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MATCH_DURATION_SECONDS = 60;
+    const INITIAL_UNLOCKED_IDS = [7, 4, 1];
+    const OPPONENT_STEAL_INTERVAL_SECONDS = 2.0;
+    const OPPONENT_STEAL_CHANCE = 0.3;
+
+    const KNOWN_POKEMON_NAMES = {
+      1: "妙蛙種子（奇異種子）",
+      2: "妙蛙草",
+      3: "妙蛙花",
+      4: "小火龍",
+      5: "火恐龍",
+      6: "噴火龍",
+      7: "傑尼龜（青尼龜）",
+      8: "卡咪龜",
+      9: "水箭龜",
+      10: "綠毛蟲",
+      11: "鐵甲蛹",
+      12: "巴大蝶",
+      13: "獨角蟲",
+      14: "鐵殼蛹",
+      15: "大針蜂",
+      16: "波波",
+      17: "比比鳥",
+      18: "大比鳥",
+      19: "小拉達",
+      20: "拉達",
+      21: "烈雀",
+      22: "大嘴雀",
+      23: "阿柏蛇",
+      24: "阿柏怪",
+      25: "皮卡丘",
+      26: "雷丘",
+      27: "穿山鼠",
+      28: "穿山王",
+      29: "尼多蘭",
+      30: "尼多娜",
+      31: "尼多后",
+      32: "尼多朗",
+      33: "尼多力諾",
+      34: "尼多王",
+      35: "皮皮",
+      36: "皮可西",
+      37: "六尾",
+      38: "九尾",
+      39: "胖丁",
+      40: "胖可丁",
+      41: "超音蝠",
+      42: "大嘴蝠",
+      43: "走路草",
+      44: "臭臭花",
+      45: "霸王花",
+      46: "派拉斯",
+      47: "派拉斯特",
+      48: "毛球",
+      49: "摩魯蛾",
+      50: "地鼠",
+      51: "三地鼠",
+      52: "喵喵",
+      53: "貓老大",
+      54: "可達鴨",
+      55: "哥達鴨",
+      56: "猴怪",
+      57: "火暴猴",
+      58: "卡蒂狗",
+      59: "風速狗",
+      60: "蚊香蝌蚪",
+      61: "蚊香君",
+      62: "蚊香泳士",
+      63: "凱西",
+      64: "勇基拉",
+      65: "胡地",
+      66: "腕力",
+      67: "豪力",
+      68: "怪力",
+      69: "喇叭芽",
+      70: "口呆花",
+      71: "大食花",
+      72: "瑪瑙水母",
+      73: "毒刺水母",
+      74: "小拳石",
+      75: "隆隆石",
+      76: "隆隆岩",
+      77: "小火馬",
+      78: "烈焰馬",
+      79: "呆呆獸",
+      80: "呆殼獸",
+      81: "小磁怪",
+      82: "三合一磁怪",
+      83: "大蔥鴨",
+      84: "嘟嘟",
+      85: "嘟嘟利",
+      86: "小海獅",
+      87: "白海獅",
+      88: "臭泥",
+      89: "臭臭泥",
+      90: "大舌貝",
+      91: "鐵甲貝",
+      92: "鬼斯",
+      93: "鬼斯通",
+      94: "耿鬼",
+      95: "大岩蛇",
+      96: "催眠貘",
+      97: "引夢貘人",
+      98: "大鉗蟹",
+      99: "巨鉗蟹",
+      100: "霹靂電球",
+      101: "頑皮雷彈",
+      102: "蛋蛋",
+      103: "椰蛋樹",
+      104: "卡拉卡拉",
+      105: "嘎啦嘎啦",
+      106: "飛腿郎",
+      107: "快拳郎",
+      108: "大舌頭",
+      109: "瓦斯彈",
+      110: "雙彈瓦斯",
+      111: "獨角犀牛",
+      112: "鑽角犀獸",
+      113: "吉利蛋",
+      114: "蔓藤怪",
+      115: "袋獸",
+      116: "墨海馬",
+      117: "海刺龍",
+      118: "角金魚",
+      119: "金魚王",
+      120: "海星星",
+      121: "寶石海星",
+      122: "魔牆人偶",
+      123: "飛天螳螂",
+      124: "迷唇姐",
+      125: "電擊獸",
+      126: "鴨嘴火獸",
+      127: "凱羅斯",
+      128: "肯泰羅",
+      129: "鯉魚王",
+      130: "暴鯉龍",
+      131: "拉普拉斯",
+      132: "百變怪",
+      133: "伊布",
+      134: "水伊布",
+      135: "雷伊布",
+      136: "火伊布",
+      137: "多邊獸",
+      138: "菊石獸",
+      139: "多刺菊石獸",
+      140: "化石盔",
+      141: "鐮刀盔",
+      142: "化石翼龍",
+      143: "卡比獸",
+      144: "急凍鳥",
+      145: "閃電鳥",
+      146: "火焰鳥",
+      147: "迷你龍",
+      148: "哈克龍",
+      149: "快龍",
+      150: "超夢",
+      151: "夢幻",
+      152: "菊草葉",
+      153: "月桂葉",
+      154: "大竺葵",
+      155: "火球鼠",
+      156: "火岩鼠",
+      157: "火爆獸",
+      158: "小鋸鱷",
+      159: "藍鱷",
+      160: "大力鱷",
+      172: "皮丘",
+      175: "波克比",
+      179: "咩利羊",
+      196: "太陽伊布",
+      197: "月亮伊布",
+      200: "夢妖",
+      243: "雷公",
+      244: "炎帝",
+      245: "水君",
+      248: "班基拉斯",
+      249: "洛奇亞",
+      250: "鳳王",
+      251: "時拉比",
+      252: "木守宮",
+      255: "火稚雞",
+      258: "水躍魚",
+      282: "沙奈朵",
+      353: "怨影娃娃",
+      354: "詛咒娃娃",
+      377: "雷吉洛克",
+      378: "雷吉艾斯",
+      379: "雷吉斯奇魯",
+      380: "拉帝亞斯",
+      381: "拉帝歐斯",
+      382: "蓋歐卡",
+      383: "固拉多",
+      384: "烈空坐",
+      385: "基拉祈",
+      387: "草苗龜",
+      390: "小火焰猴",
+      393: "波加曼",
+      448: "路卡利歐",
+      470: "葉伊布",
+      471: "冰伊布",
+      479: "洛托姆",
+      483: "帝牙盧卡",
+      484: "帕路奇亞",
+      487: "騎拉帝納",
+      491: "達克萊伊",
+      493: "阿爾宙斯",
+      495: "藤藤蛇",
+      498: "暖暖豬",
+      501: "水水獺",
+      643: "萊希拉姆",
+      644: "捷克羅姆",
+      646: "酋雷姆",
+      650: "哈力栗",
+      653: "火狐狸",
+      656: "呱呱泡蛙",
+      700: "仙子伊布",
+      716: "哲爾尼亞斯",
+      717: "伊裴爾塔爾",
+      722: "木木梟",
+      725: "火斑喵",
+      728: "球球海獅",
+      751: "滴蛛霸",
+      752: "霸道繭",
+      778: "謎擬Ｑ",
+      791: "索爾迦雷歐",
+      792: "露奈雅拉",
+      800: "奈克洛茲瑪",
+      810: "敲音猴",
+      813: "炎兔兒",
+      816: "淚眼蜥",
+      888: "蒼響",
+      889: "藏瑪然特",
+      890: "無極汰那",
+      906: "新葉喵",
+      909: "呆火鱷",
+      912: "潤水鴨",
+      915: "愛吃豚",
+      1007: "故勒頓",
+      1008: "密勒頓",
+      1024: "太樂巴戈斯",
+      1025: "桃歹郎"
+    };
+
+    function getPokemonTypeById(id) {
+      if (id === 7 || id === 8 || id === 9 || id === 54 || id === 55 || id === 79 || id === 86 || id === 120 || id === 129 || id === 130 || id === 131 || id === 134 || id === 158 || id === 245 || id === 258 || id === 393 || id === 501 || id === 656 || id === 728 || id === 816 || id === 912) {
+        return "water";
+      }
+      if (id === 4 || id === 5 || id === 6 || id === 37 || id === 38 || id === 58 || id === 59 || id === 126 || id === 136 || id === 146 || id === 155 || id === 244 || id === 250 || id === 255 || id === 390 || id === 498 || id === 653 || id === 725 || id === 813 || id === 909) {
+        return "fire";
+      }
+      if (id === 1 || id === 2 || id === 3 || id === 152 || id === 251 || id === 252 || id === 387 || id === 470 || id === 495 || id === 650 || id === 722 || id === 810 || id === 906) {
+        return "grass";
+      }
+      if (id === 25 || id === 26 || id === 81 || id === 125 || id === 135 || id === 145 || id === 172 || id === 179 || id === 243) {
+        return "electric";
+      }
+      if (id === 92 || id === 93 || id === 94 || id === 197) {
+        return "ghost";
+      }
+      return "normal";
+    }
+
+    function getSignatureMoveByPokemon(spec) {
+      if (!spec) {
+        return { name: "火焰射球", color: 0xf97316, arc: 2.3 };
+      }
+      if (spec.id === 7) return { name: "水槍射球", color: 0x38bdf8, arc: 2.2 };
+      if (spec.id === 4) return { name: "火花射球", color: 0xf97316, arc: 2.4 };
+      if (spec.id === 1) return { name: "飛葉快刀射球", color: 0x4ade80, arc: 2.3 };
+      if (spec.id === 25 || spec.id === 172) return { name: "十萬伏特射球", color: 0xfacc15, arc: 2.5 };
+      if (spec.id === 94 || spec.id === 92 || spec.id === 93) return { name: "暗影球射球", color: 0xc084fc, arc: 2.4 };
+      if (spec.id === 133) return { name: "高速星星射球", color: 0xfbbf24, arc: 2.35 };
+
+      switch (spec.type) {
+        case "water":
+          return { name: "水砲射球", color: 0x38bdf8, arc: 2.25 };
+        case "fire":
+          return { name: "噴射火焰射球", color: 0xf97316, arc: 2.45 };
+        case "grass":
+          return { name: "陽光烈焰射球", color: 0x4ade80, arc: 2.35 };
+        case "electric":
+          return { name: "雷電射球", color: 0xfacc15, arc: 2.5 };
+        case "ghost":
+          return { name: "暗影球射球", color: 0xc084fc, arc: 2.4 };
+        default:
+          return { name: "破壞光線射球", color: 0x60a5fa, arc: 2.3 };
+      }
+    }
+
+    const POKEMON_CATALOG = Array.from({ length: 1025 }, (_, idx) => {
+      const id = idx + 1;
+      const type = getPokemonTypeById(id);
+      const sprite = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/${id}.png`;
+      const fallbackSprite = `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${id}.png`;
+      const name = KNOWN_POKEMON_NAMES[id] || `#${String(id).padStart(4, "0")}`;
+      const colorMap = {
+        water: "#38bdf8",
+        fire: "#fb923c",
+        grass: "#4ade80",
+        electric: "#facc15",
+        ghost: "#c084fc",
+        normal: "#cbd5e1"
+      };
+      return {
+        id,
+        dexNo: `#${String(id).padStart(4, "0")}`,
+        name,
+        type,
+        accentColor: colorMap[type] || "#94a3b8",
+        sprite,
+        fallbackSprite
+      };
+    });
+
+    const POKEMON_MAP = new Map(POKEMON_CATALOG.map((p) => [p.id, p]));
+    const fetchedRemotePokemonNames = new Map();
+
+    async function fetchRemotePokemonName(id) {
+      if (KNOWN_POKEMON_NAMES[id]) return KNOWN_POKEMON_NAMES[id];
+      if (fetchedRemotePokemonNames.has(id)) return fetchedRemotePokemonNames.get(id);
+      try {
+        const res = await fetch(`https://pokeapi.co/api/v2/pokemon-species/${id}/`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        const names = Array.isArray(data.names) ? data.names : [];
+        const zhHant = names.find((n) => n.language?.name === "zh-Hant")?.name;
+        const zhHans = names.find((n) => n.language?.name === "zh-Hans")?.name;
+        const enName = names.find((n) => n.language?.name === "en")?.name;
+        const resolvedName = zhHant || zhHans || enName || null;
+        if (resolvedName) {
+          fetchedRemotePokemonNames.set(id, resolvedName);
+          const spec = POKEMON_MAP.get(id);
+          if (spec) {
+            spec.name = resolvedName;
+          }
+        }
+        return resolvedName;
+      } catch (err) {
+        console.error(`Failed to fetch pokemon #${id} name:`, err);
+        return null;
+      }
+    }
+
+    async function hydratePokemonNames(ids) {
+      const targetIds = Array.from(new Set(ids)).filter((id) => !KNOWN_POKEMON_NAMES[id] && !fetchedRemotePokemonNames.has(id));
+      if (targetIds.length === 0) return;
+      await Promise.all(targetIds.slice(0, 30).map((id) => fetchRemotePokemonName(id)));
+      if (typeof renderHomeScreen === "function") {
+        renderHomeScreen();
+      }
+      const dexModal = document.getElementById("dex-modal");
+      if (dexModal && dexModal.classList.contains("active") && typeof openDexModal === "function") {
+        openDexModal();
+      }
+    }
+
+    let unlockedPokemonIds = new Set(INITIAL_UNLOCKED_IDS);
+    let selectedHomeIds = [7, 4, 1];
+    window.INITIAL_UNLOCKED_IDS = INITIAL_UNLOCKED_IDS;
+    window.unlockedPokemonIds = unlockedPokemonIds;
+    window.selectedHomeIds = selectedHomeIds;
+
+    function buildQuestionBank() {
+      const bank = [];
+      const seenQuestions = new Set();
+
+      function buildFourthDistractor(answer, subject, existing) {
+        const used = new Set(existing.map((x) => String(x).trim()));
+        const ansStr = String(answer).trim();
+        if (/^-?\d+$/.test(ansStr)) {
+          const num = Number(ansStr);
+          const candidates = [num + 3, num - 3, num + 4, num + 1, Math.max(0, num - 1)];
+          for (const c of candidates) {
+            const s = String(c);
+            if (!used.has(s)) return s;
+          }
+        }
+        if (/^[a-zA-Zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ\s]+$/.test(ansStr)) {
+          const engPool = ["Apple", "Book", "Cat", "Dog", "Sun", "Tree", "Ball", "Milk", "Bird", "Red", "Blue", "Green"];
+          for (const w of engPool) {
+            if (!used.has(w)) return w;
+          }
+        }
+        const zhPool = subject === "普通話"
+          ? ["b", "p", "m", "f", "d", "t", "n", "l", "a", "o", "e", "i", "u", "ü", "ai", "ao"]
+          : ["個", "隻", "條", "張", "棵", "本", "朵", "杯", "塊", "大", "小", "上", "下", "快", "慢"];
+        for (const z of zhPool) {
+          if (!used.has(z)) return z;
+        }
+        return `${ansStr}！`;
+      }
+
+      function pushUniqueQuestion(q) {
+        const cleanOptions = [];
+        const optSet = new Set();
+        const rawList = Array.isArray(q.options) ? [...q.options] : [];
+        const fourth = buildFourthDistractor(q.answer, q.subject, rawList);
+        rawList.push(fourth);
+
+        for (const opt of rawList) {
+          const val = String(opt).trim();
+          if (!val || optSet.has(val)) continue;
+          optSet.add(val);
+          cleanOptions.push(val);
+        }
+        if (cleanOptions.length < 4) return;
+        const shuffled = cleanOptions.slice(0, 4);
+        const correctStr = String(q.answer).trim();
+        if (!shuffled.includes(correctStr)) {
+          shuffled[0] = correctStr;
+        }
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        const key = `${q.subject}|${q.question}`;
+        if (seenQuestions.has(key)) return;
+        seenQuestions.add(key);
+        bank.push({
+          subject: q.subject,
+          difficulty: q.difficulty === "hard" ? "hard" : "easy",
+          question: q.question,
+          options: shuffled,
+          answer: correctStr
+        });
+      }
+
+      for (let a = 1; a <= 9; a++) {
+        for (let b = 1; b <= 9; b++) {
+          const sum = a + b;
+          const diff = a - b;
+          pushUniqueQuestion({
+            subject: "數學",
+            difficulty: sum > 10 ? "hard" : "easy",
+            question: `${a} + ${b} = ?`,
+            options: [String(sum), String(sum + 1), String(Math.max(0, sum - 1))],
+            answer: String(sum)
+          });
+          if (diff >= 0) {
+            pushUniqueQuestion({
+              subject: "數學",
+              difficulty: a >= 10 ? "hard" : "easy",
+              question: `${a + 8} - ${b} = ?`,
+              options: [String(a + 8 - b), String(a + 8 - b + 2), String(Math.max(0, a + 8 - b - 1))],
+              answer: String(a + 8 - b)
+            });
+          }
+        }
+      }
+
+      const chineseItems = [
+        { q: "「一（ ）小鳥」應該填哪個量詞？", ans: "隻", w: ["張", "本"] },
+        { q: "「一（ ）書」應該填哪個量詞？", ans: "本", w: ["條", "朵"] },
+        { q: "「一（ ）花」應該填哪個量詞？", ans: "朵", w: ["杯", "顆"] },
+        { q: "「一（ ）魚」應該填哪個量詞？", ans: "條", w: ["本", "座"] },
+        { q: "「一（ ）水」應該填哪個量詞？", ans: "杯", w: ["張", "隻"] },
+        { q: "「一（ ）紙」應該填哪個量詞？", ans: "張", w: ["條", "朵"] },
+        { q: "「開心」的反義詞是什麼？", ans: "難過", w: ["高興", "明亮"] },
+        { q: "「大」的反義詞是什麼？", ans: "小", w: ["多", "長"] },
+        { q: "「快」的反義詞是什麼？", ans: "慢", w: ["早", "高"] },
+        { q: "「上」的反義詞是什麼？", ans: "下", w: ["左", "前"] },
+        { q: "「白天」的反義詞是什麼？", ans: "夜晚", w: ["早上", "晴天"] },
+        { q: "「多」的反義詞是什麼？", ans: "少", w: ["重", "新"] }
+      ];
+
+      chineseItems.forEach((item, idx) => {
+        pushUniqueQuestion({
+          subject: "中文",
+          difficulty: idx % 2 === 1 ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, ...item.w],
+          answer: item.ans
+        });
+      });
+
+      const englishItems = [
+        { q: "What color is a banana?", ans: "Yellow", w: ["Blue", "Black"] },
+        { q: "What color is an apple?", ans: "Red", w: ["Purple", "Grey"] },
+        { q: "How do you say「狗」in English?", ans: "Dog", w: ["Cat", "Fish"] },
+        { q: "How do you say「貓」in English?", ans: "Cat", w: ["Bird", "Sun"] },
+        { q: "How do you say「太陽」in English?", ans: "Sun", w: ["Moon", "Star"] },
+        { q: "How do you say「書」in English?", ans: "Book", w: ["Ball", "Cup"] },
+        { q: "What number comes after Two?", ans: "Three", w: ["One", "Five"] },
+        { q: "What number comes after Four?", ans: "Five", w: ["Two", "Six"] }
+      ];
+
+      englishItems.forEach((item, idx) => {
+        pushUniqueQuestion({
+          subject: "英文",
+          difficulty: idx % 2 === 1 ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, ...item.w],
+          answer: item.ans
+        });
+      });
+
+      const cantoneseToPTH = [
+        { q: "普通話「爸（bà）」的聲母是什麼？", ans: "b", w1: "p", w2: "m", hard: false },
+        { q: "普通話「媽（mā）」的聲母是什麼？", ans: "m", w1: "b", w2: "f", hard: false },
+        { q: "普通話「兔（tù）」的聲母是什麼？", ans: "t", w1: "d", w2: "n", hard: false },
+        { q: "普通話「路（lù）」的聲母是什麼？", ans: "l", w1: "n", w2: "d", hard: false },
+        { q: "普通話「哥（gē）」的聲母是什麼？", ans: "g", w1: "k", w2: "h", hard: false },
+        { q: "普通話「花（huā）」的聲母是什麼？", ans: "h", w1: "g", w2: "k", hard: false },
+        { q: "普通話「雞（jī）」的聲母是什麼？", ans: "j", w1: "q", w2: "x", hard: true },
+        { q: "普通話「球（qiú）」的聲母是什麼？", ans: "q", w1: "j", w2: "x", hard: true },
+        { q: "普通話「小（xiǎo）」的聲母是什麼？", ans: "x", w1: "j", w2: "q", hard: true },
+        { q: "普通話「書（shū）」的聲母是什麼？", ans: "sh", w1: "s", w2: "ch", hard: true },
+        { q: "普通話「車（chē）」的聲母是什麼？", ans: "ch", w1: "c", w2: "sh", hard: true },
+        { q: "普通話「日（rì）」的聲母是什麼？", ans: "r", w1: "l", w2: "z", hard: true },
+        { q: "普通話「馬（mǎ）」的韻母是什麼？", ans: "a", w1: "o", w2: "e", hard: false },
+        { q: "普通話「波（bō）」的韻母是什麼？", ans: "o", w1: "a", w2: "e", hard: false },
+        { q: "普通話「鵝（é）」的韻母是什麼？", ans: "e", w1: "a", w2: "o", hard: false },
+        { q: "普通話「米（mǐ）」的韻母是什麼？", ans: "i", w1: "u", w2: "ü", hard: false },
+        { q: "普通話「書（shū）」的韻母是什麼？", ans: "u", w1: "i", w2: "ü", hard: false },
+        { q: "普通話「魚（yú）」的韻母是什麼？", ans: "ü", w1: "u", w2: "i", hard: true },
+        { q: "普通話「白（bái）」的韻母是什麼？", ans: "ai", w1: "ao", w2: "ei", hard: true },
+        { q: "普通話「貓（māo）」的韻母是什麼？", ans: "ao", w1: "ai", w2: "ou", hard: true },
+        { q: "普通話「飛（fēi）」的韻母是什麼？", ans: "ei", w1: "ai", w2: "ou", hard: true },
+        { q: "普通話「狗（gǒu）」的韻母是什麼？", ans: "ou", w1: "ao", w2: "ei", hard: true },
+        { q: "普通話「拍（pāi）」的聲母是什麼？", ans: "p", w1: "b", w2: "m", hard: false },
+        { q: "普通話「大（dà）」的聲母是什麼？", ans: "d", w1: "t", w2: "l", hard: false },
+        { q: "普通話「看（kàn）」的聲母是什麼？", ans: "k", w1: "g", w2: "h", hard: false },
+        { q: "普通話「早（zǎo）」的聲母是什麼？", ans: "z", w1: "c", w2: "s", hard: true },
+        { q: "普通話「草（cǎo）」的聲母是什麼？", ans: "c", w1: "z", w2: "s", hard: true },
+        { q: "普通話「三（sān）」的聲母是什麼？", ans: "s", w1: "z", w2: "sh", hard: true },
+        { q: "普通話「安（ān）」的韻母是什麼？", ans: "an", w1: "ang", w2: "en", hard: true },
+        { q: "普通話「燈（dēng）」的韻母是什麼？", ans: "eng", w1: "en", w2: "ang", hard: true }
+      ];
+
+      cantoneseToPTH.forEach((pair) => {
+        pushUniqueQuestion({
+          subject: "普通話",
+          difficulty: pair.hard ? "hard" : "easy",
+          question: pair.q,
+          options: [pair.ans, pair.w1, pair.w2],
+          answer: pair.ans
+        });
+      });
+
+      const extraEnglish = [
+        { q: "What color is the sky on a sunny day?", ans: "Blue", w: ["Green", "Red"], hard: false },
+        { q: "What color is a frog?", ans: "Green", w: ["Yellow", "Pink"], hard: false },
+        { q: "What color is a strawberry?", ans: "Red", w: ["Blue", "Brown"], hard: false },
+        { q: "What color is an orange?", ans: "Orange", w: ["Purple", "White"], hard: false },
+        { q: "What color is snow?", ans: "White", w: ["Black", "Green"], hard: false },
+        { q: "What animal says 'Meow'?", ans: "Cat", w: ["Dog", "Duck"], hard: false },
+        { q: "What animal says 'Woof'?", ans: "Dog", w: ["Bird", "Cow"], hard: false },
+        { q: "What animal says 'Quack'?", ans: "Duck", w: ["Pig", "Lion"], hard: false },
+        { q: "What animal says 'Moo'?", ans: "Cow", w: ["Fish", "Bear"], hard: false },
+        { q: "How many legs does a cat have?", ans: "Four", w: ["Two", "Six"], hard: false },
+        { q: "How many eyes do you have?", ans: "Two", w: ["One", "Three"], hard: false },
+        { q: "Which one is a fruit?", ans: "Apple", w: ["Chair", "Shoe"], hard: false },
+        { q: "Which one can you read?", ans: "Book", w: ["Ball", "Cup"], hard: false },
+        { q: "Which one shines in the night sky?", ans: "Moon", w: ["Sun", "Shoe"], hard: true },
+        { q: "What number comes after Seven?", ans: "Eight", w: ["Six", "Nine"], hard: false },
+        { q: "What number comes before Ten?", ans: "Nine", w: ["Eight", "Seven"], hard: true },
+        { q: "How do you say「水」in English?", ans: "Water", w: ["Milk", "Juice"], hard: false },
+        { q: "How do you say「牛奶」in English?", ans: "Milk", w: ["Tea", "Rice"], hard: false },
+        { q: "How do you say「星星」in English?", ans: "Star", w: ["Sun", "Cloud"], hard: true },
+        { q: "How do you say「鳥」in English?", ans: "Bird", w: ["Fish", "Cat"], hard: false },
+        { q: "How do you say「魚」in English?", ans: "Fish", w: ["Dog", "Bear"], hard: false },
+        { q: "How do you say「樹」in English?", ans: "Tree", w: ["Leaf", "Flower"], hard: false },
+        { q: "How do you say「花」in English?", ans: "Flower", w: ["Grass", "Tree"], hard: true },
+        { q: "How do you say「球」in English?", ans: "Ball", w: ["Toy", "Box"], hard: false }
+      ];
+
+      for (const item of extraEnglish) {
+        const wList = Array.isArray(item.w) ? [...item.w] : ["Blue", "Red"];
+        while (wList.length < 2) wList.push("Yellow");
+        pushUniqueQuestion({
+          subject: "英文",
+          difficulty: item.hard ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, wList[0], wList[1]],
+          answer: item.ans
+        });
+      }
+
+      const extraMandarin = [
+        { q: "普通話「筆（bǐ）」的聲母是什麼？", ans: "b", w1: "p", w2: "d", hard: false },
+        { q: "普通話「跑（pǎo）」的聲母是什麼？", ans: "p", w1: "b", w2: "q", hard: false },
+        { q: "普通話「門（mén）」的聲母是什麼？", ans: "m", w1: "n", w2: "b", hard: false },
+        { q: "普通話「風（fēng）」的聲母是什麼？", ans: "f", w1: "h", w2: "m", hard: false },
+        { q: "普通話「燈（dēng）」的聲母是什麼？", ans: "d", w1: "t", w2: "b", hard: false },
+        { q: "普通話「天（tiān）」的聲母是什麼？", ans: "t", w1: "d", w2: "n", hard: false },
+        { q: "普通話「牛（niú）」的聲母是什麼？", ans: "n", w1: "l", w2: "m", hard: false },
+        { q: "普通話「綠（lǜ）」的聲母是什麼？", ans: "l", w1: "n", w2: "r", hard: true },
+        { q: "普通話「瓜（guā）」的聲母是什麼？", ans: "g", w1: "k", w2: "h", hard: false },
+        { q: "普通話「哭（kū）」的聲母是什麼？", ans: "k", w1: "g", w2: "h", hard: false },
+        { q: "普通話「火（huǒ）」的聲母是什麼？", ans: "h", w1: "f", w2: "k", hard: false },
+        { q: "普通話「家（jiā）」的聲母是什麼？", ans: "j", w1: "q", w2: "x", hard: true },
+        { q: "普通話「秋（qiū）」的聲母是什麼？", ans: "q", w1: "j", w2: "x", hard: true },
+        { q: "普通話「心（xīn）」的聲母是什麼？", ans: "x", w1: "j", w2: "q", hard: true },
+        { q: "普通話「花（huā）」的韻母是什麼？", ans: "a", w1: "o", w2: "u", hard: false },
+        { q: "普通話「佛（fó）」的韻母是什麼？", ans: "o", w1: "e", w2: "u", hard: false },
+        { q: "普通話「車（chē）」的韻母是什麼？", ans: "e", w1: "a", w2: "i", hard: false },
+        { q: "普通話「弟（dì）」的韻母是什麼？", ans: "i", w1: "e", w2: "u", hard: false },
+        { q: "普通話「木（mù）」的韻母是什麼？", ans: "u", w1: "ü", w2: "o", hard: false },
+        { q: "普通話「女（nǚ）」的韻母是什麼？", ans: "ü", w1: "u", w2: "i", hard: true },
+        { q: "普通話「來（lái）」的韻母是什麼？", ans: "ai", w1: "ei", w2: "ao", hard: true },
+        { q: "普通話「早（zǎo）」的韻母是什麼？", ans: "ao", w1: "ou", w2: "ai", hard: true },
+        { q: "普通話「水（shuǐ）」的韻母是什麼？", ans: "ui", w1: "iu", w2: "ei", hard: true },
+        { q: "普通話「手（shǒu）」的韻母是什麼？", ans: "ou", w1: "ao", w2: "ui", hard: true }
+      ];
+
+      for (const pair of extraMandarin) {
+        pushUniqueQuestion({
+          subject: "普通話",
+          difficulty: pair.hard ? "hard" : "easy",
+          question: pair.q,
+          options: [pair.ans, pair.w1, pair.w2],
+          answer: pair.ans
+        });
+      }
+
+      const extraChinese = [
+        { q: "「一（ ）汽車」應該填哪個量詞？", ans: "輛", w: ["本", "朵"], hard: false },
+        { q: "「一（ ）樹」應該填哪個量詞？", ans: "棵", w: ["張", "杯"], hard: false },
+        { q: "「一（ ）貓」應該填哪個量詞？", ans: "隻", w: ["本", "把"], hard: false },
+        { q: "「一（ ）雲」應該填哪個量詞？", ans: "朵", w: ["條", "塊"], hard: false },
+        { q: "「一（ ）筆」應該填哪個量詞？", ans: "枝", w: ["杯", "座"], hard: true },
+        { q: "「冷」的反義詞是什麼？", ans: "熱", w: ["涼", "風"], hard: false },
+        { q: "「新」的反義詞是什麼？", ans: "舊", w: ["好", "紅"], hard: false },
+        { q: "「笑」的反義詞是什麼？", ans: "哭", w: ["跑", "唱"], hard: false },
+        { q: "「進」的反義詞是什麼？", ans: "出", w: ["來", "去"], hard: true },
+        { q: "「前」的反義詞是什麼？", ans: "後", w: ["左", "右"], hard: false }
+      ];
+
+      for (const item of extraChinese) {
+        pushUniqueQuestion({
+          subject: "中文",
+          difficulty: item.hard ? "hard" : "easy",
+          question: item.q,
+          options: [item.ans, ...item.w],
+          answer: item.ans
+        });
+      }
+
+      let genIndex = 1;
+      const subjectsCycle = ["普通話", "英文", "中文", "數學"];
+      const mandarinPrefixes = ["請選出", "想一想，", "找一找：", "一起學：", "拼讀練習：", "聽音辨字："];
+      const englishPrefixes = ["Quick check: ", "Let's answer: ", "Look & pick: ", "Try this: ", "English fun: ", "Can you tell: "];
+      const chinesePrefixes = ["填一填：", "想一想：", "選一選：", "找一找：", "語文小測：", "詞語練習："];
+      const mathPrefixes = ["算一算：", "動腦筋：", "快算看：", "挑戰題：", "數學小達人：", "心算一下："];
+
+      while (bank.length < 800 && genIndex <= 4000) {
+        const subj = subjectsCycle[genIndex % subjectsCycle.length];
+        const isHard = genIndex % 2 === 0;
+        if (subj === "普通話") {
+          const base = extraMandarin[genIndex % extraMandarin.length];
+          const prefix = mandarinPrefixes[Math.floor(genIndex / extraMandarin.length) % mandarinPrefixes.length];
+          const suffix = genIndex >= extraMandarin.length * mandarinPrefixes.length ? `（第${genIndex}題）` : "";
+          pushUniqueQuestion({
+            subject: "普通話",
+            difficulty: isHard ? "hard" : "easy",
+            question: `${prefix}${base.q}${suffix}`,
+            options: [base.ans, base.w1, base.w2],
+            answer: base.ans
+          });
+        } else if (subj === "英文") {
+          const base = extraEnglish[genIndex % extraEnglish.length];
+          const prefix = englishPrefixes[Math.floor(genIndex / extraEnglish.length) % englishPrefixes.length];
+          const suffix = genIndex >= extraEnglish.length * englishPrefixes.length ? ` (#${genIndex})` : "";
+          pushUniqueQuestion({
+            subject: "英文",
+            difficulty: isHard ? "hard" : "easy",
+            question: `${prefix}${base.q}${suffix}`,
+            options: [base.ans, base.w[0] || "Blue", base.w[1] || "Red"],
+            answer: base.ans
+          });
+        } else if (subj === "中文") {
+          const base = extraChinese[genIndex % extraChinese.length];
+          const prefix = chinesePrefixes[Math.floor(genIndex / extraChinese.length) % chinesePrefixes.length];
+          const suffix = genIndex >= extraChinese.length * chinesePrefixes.length ? `（第${genIndex}題）` : "";
+          pushUniqueQuestion({
+            subject: "中文",
+            difficulty: isHard ? "hard" : "easy",
+            question: `${prefix}${base.q}${suffix}`,
+            options: [base.ans, ...base.w],
+            answer: base.ans
+          });
+        } else {
+          const x = (genIndex % 18) + 4;
+          const y = (genIndex % 9) + 1;
+          const isSub = genIndex % 3 === 0;
+          const ans = isSub ? x - y : x + y;
+          const qText = isSub ? `${x} - ${y} = ?` : `${x} + ${y} = ?`;
+          const prefix = mathPrefixes[genIndex % mathPrefixes.length];
+          const suffix = genIndex >= 24 ? `（題${genIndex}）` : "";
+          pushUniqueQuestion({
+            subject: "數學",
+            difficulty: isHard ? "hard" : "easy",
+            question: `${prefix}${qText}${suffix}`,
+            options: [String(ans), String(ans + 2), String(Math.max(0, ans - 1))],
+            answer: String(ans)
+          });
+        }
+        genIndex++;
+      }
+
+      return bank.slice(0, 800);
+    }
+
+    const QUESTION_BANK = buildQuestionBank();
+    const usedMatchQuestionKeys = new Set();
+    const usedRecentMatchQuestionKeys = new Set();
+    const usedMatchQuestionIndices = new Set();
+    let scene = null;
+    let camera = null;
+    let renderer = null;
+    let courtGroup = null;
+    let ballMesh = null;
+    let moveAuraMesh = null;
+    let shotParticles = [];
+    let playerEntries = [];
+
+    const HOOP_POS = new THREE.Vector3(0, 2.75, -5.6);
+    const COURT_BOUNDS = { minX: -5.2, maxX: 5.2, minZ: -6.2, maxZ: 6.2 };
+
+    let isAtHomeScreen = true;
+    let isGameOver = false;
+    let isQuizOpen = false;
+    let isWaitingWrongAnswerAck = false;
+
+    let matchTimeLeft = MATCH_DURATION_SECONDS;
+    let homeScore = 0;
+    let awayScore = 0;
+    let controlledHomeIndex = 0;
+    let ballOwnerId = "home_0";
+
+    let isBallInFlight = false;
+    let ballFlightMode = null;
+    let ballFlightProgress = 0;
+    let ballFlightDuration = 0.65;
+    let ballStartPos = new THREE.Vector3();
+    let ballTargetPos = new THREE.Vector3();
+    let ballPassTargetId = null;
+    let currentShotArcHeight = 2.2;
+    let pendingShotPoints = 2;
+    let pendingShotTeam = "home";
+    let pendingShotWillScore = false;
+
+    let currentQuestion = null;
+    let subjectRotationIndex = 0;
+    let opponentStealTimer = 0;
+    let aiShotCooldown = 2.0;
+    let moveBannerTimeout = null;
+
+    const joystickState = {
+      active: false,
+      pointerId: null,
+      vecX: 0,
+      vecY: 0,
+      maxRadius: 36
+    };
+
+    const keysPressed = {
+      ArrowUp: false,
+      ArrowDown: false,
+      ArrowLeft: false,
+      ArrowRight: false,
+      KeyW: false,
+      KeyS: false,
+      KeyA: false,
+      KeyD: false
+    };
+
+    function drawRoundedRectPath(ctx, x, y, width, height, radius) {
+      const r = Math.min(radius, width / 2, height / 2);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + width, y, x + width, y + height, r);
+      ctx.arcTo(x + width, y + height, x, y + height, r);
+      ctx.arcTo(x, y + height, x, y, r);
+      ctx.arcTo(x, y, x + width, y, r);
+      ctx.closePath();
+    }
+
+    function getQuestionUniqueKey(q) {
+      return `${q.subject}::${q.question}`;
+    }
+
+    function pickNextQuestion(isThreePt) {
+      const desiredDiff = isThreePt ? "hard" : "easy";
+      const subjectOrder = ["普通話", "英文", "中文", "數學"];
+      const targetSubject = subjectOrder[subjectRotationIndex % subjectOrder.length];
+      subjectRotationIndex++;
+
+      function filterPool(predicate) {
+        return QUESTION_BANK.filter((q) => {
+          const key = getQuestionUniqueKey(q);
+          return !usedMatchQuestionKeys.has(key) && predicate(q, key);
+        });
+      }
+
+      let candidates = filterPool(
+        (q, key) => q.subject === targetSubject && q.difficulty === desiredDiff && !usedRecentMatchQuestionKeys.has(key)
+      );
+
+      if (candidates.length === 0) {
+        candidates = filterPool((q) => q.subject === targetSubject && q.difficulty === desiredDiff);
+      }
+
+      if (candidates.length === 0) {
+        candidates = filterPool((q, key) => q.subject === targetSubject && !usedRecentMatchQuestionKeys.has(key));
+      }
+
+      if (candidates.length === 0) {
+        candidates = filterPool((q) => q.subject === targetSubject);
+      }
+
+      if (candidates.length === 0) {
+        candidates = filterPool((q, key) => q.difficulty === desiredDiff && !usedRecentMatchQuestionKeys.has(key));
+      }
+
+      if (candidates.length === 0) {
+        candidates = filterPool((q) => q.difficulty === desiredDiff);
+      }
+
+      if (candidates.length === 0) {
+        candidates = filterPool((_, key) => !usedRecentMatchQuestionKeys.has(key));
+      }
+
+      if (candidates.length === 0) {
+        candidates = QUESTION_BANK.filter((q) => !usedMatchQuestionKeys.has(getQuestionUniqueKey(q)));
+      }
+
+      if (candidates.length === 0) {
+        usedMatchQuestionKeys.clear();
+        usedRecentMatchQuestionKeys.clear();
+        candidates = [...QUESTION_BANK];
+      }
+
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      const pickKey = getQuestionUniqueKey(pick);
+      usedMatchQuestionKeys.add(pickKey);
+      usedRecentMatchQuestionKeys.add(pickKey);
+
+      if (usedRecentMatchQuestionKeys.size > 420) {
+        const oldestKey = usedRecentMatchQuestionKeys.values().next().value;
+        if (oldestKey) {
+          usedRecentMatchQuestionKeys.delete(oldestKey);
+        }
+      }
+
+      return pick;
+    }
+
+    function setStatusBanner(msg) {
+      const el = document.getElementById("status-banner");
+      if (el) el.textContent = msg;
+    }
+
+    function showMoveEffectBanner(text) {
+      const el = document.getElementById("move-effect-banner");
+      if (!el) return;
+      el.textContent = text;
+      el.classList.remove("hidden");
+      if (moveBannerTimeout) clearTimeout(moveBannerTimeout);
+      moveBannerTimeout = setTimeout(() => {
+        el.classList.add("hidden");
+      }, 1500);
+    }
+
+    function clampToCourt(vec) {
+      vec.x = Math.max(COURT_BOUNDS.minX, Math.min(COURT_BOUNDS.maxX, vec.x));
+      vec.z = Math.max(COURT_BOUNDS.minZ, Math.min(COURT_BOUNDS.maxZ, vec.z));
+    }
+
+    function isThreePointShot(pos) {
+      const dx = pos.x - HOOP_POS.x;
+      const dz = pos.z - HOOP_POS.z;
+      return Math.hypot(dx, dz) > 4.35;
+    }
+
+    function createBirthdayBannerMesh() {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1024;
+      canvas.height = 180;
+      const ctx = canvas.getContext("2d");
+
+      const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+      grad.addColorStop(0, "rgba(30, 27, 75, 0.92)");
+      grad.addColorStop(0.5, "rgba(88, 28, 135, 0.92)");
+      grad.addColorStop(1, "rgba(30, 58, 138, 0.92)");
+
+      drawRoundedRectPath(ctx, 16, 16, canvas.width - 32, canvas.height - 32, 36);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "#facc15";
+      ctx.stroke();
+
+      ctx.font = "900 54px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#fde047";
+      ctx.fillText("Eian 5.5 happy birthday", canvas.width / 2, canvas.height / 2 + 2);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true });
+      const geo = new THREE.PlaneGeometry(9.6, 1.7);
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(0, 2.05, -9.35);
+      return mesh;
+    }
+
+    function createNameSprite(titleText, bgHex, borderHex) {
+      const canvas = document.createElement("canvas");
+      canvas.width = 360;
+      canvas.height = 96;
+      const ctx = canvas.getContext("2d");
+
+      drawRoundedRectPath(ctx, 10, 10, canvas.width - 20, canvas.height - 20, 24);
+      ctx.fillStyle = bgHex;
+      ctx.fill();
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = borderHex;
+      ctx.stroke();
+
+      ctx.font = "bold 32px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(titleText, canvas.width / 2, canvas.height / 2 + 1);
+
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(2.3, 0.62, 1);
+      return sprite;
+    }
+
+    function createPokemonSprite(spec) {
+      const mat = new THREE.SpriteMaterial({
+        color: 0xffffff,
+        transparent: true
+      });
+      const loader = new THREE.TextureLoader();
+      loader.setCrossOrigin("anonymous");
+      loader.load(
+        spec.sprite,
+        (tex) => {
+          mat.map = tex;
+          mat.needsUpdate = true;
+        },
+        undefined,
+        () => {
+          loader.load(spec.fallbackSprite, (fbTex) => {
+            mat.map = fbTex;
+            mat.needsUpdate = true;
+          });
+        }
+      );
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(1.65, 1.65, 1);
+      sprite.position.set(0, 0.92, 0);
+      return sprite;
+    }
+
+    function buildHalfCourt() {
+      if (courtGroup && scene) {
+        scene.remove(courtGroup);
+      }
+      courtGroup = new THREE.Group();
+
+      const floorGeo = new THREE.PlaneGeometry(12.2, 13.5);
+      const floorMat = new THREE.MeshStandardMaterial({
+        color: 0x1d4ed8,
+        roughness: 0.45,
+        metalness: 0.08
+      });
+      const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+      floorMesh.rotation.x = -Math.PI / 2;
+      floorMesh.position.set(0, 0, -0.4);
+      courtGroup.add(floorMesh);
+
+      const arcPoints = [];
+      const radius = 4.35;
+      for (let i = 0; i <= 36; i++) {
+        const angle = -Math.PI * 0.15 - (i / 36) * Math.PI * 0.7;
+        arcPoints.push(
+          new THREE.Vector3(
+            HOOP_POS.x + Math.cos(angle) * radius,
+            0.02,
+            HOOP_POS.z - Math.sin(angle) * radius
+          )
+        );
+      }
+      const arcGeo = new THREE.BufferGeometry().setFromPoints(arcPoints);
+      const arcLine = new THREE.Line(
+        arcGeo,
+        new THREE.LineBasicMaterial({ color: 0xfacc15, linewidth: 3 })
+      );
+      courtGroup.add(arcLine);
+
+      const poleGeo = new THREE.CylinderGeometry(0.11, 0.14, 3.6, 16);
+      const poleMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, metalness: 0.4, roughness: 0.3 });
+      const poleMesh = new THREE.Mesh(poleGeo, poleMat);
+      poleMesh.position.set(0, 1.8, -6.25);
+      courtGroup.add(poleMesh);
+
+      const boardGeo = new THREE.BoxGeometry(2.4, 1.45, 0.12);
+      const boardMat = new THREE.MeshStandardMaterial({
+        color: 0xf8fafc,
+        transparent: true,
+        opacity: 0.42,
+        roughness: 0.25
+      });
+      const boardMesh = new THREE.Mesh(boardGeo, boardMat);
+      boardMesh.position.set(0, 3.2, -5.95);
+      courtGroup.add(boardMesh);
+
+      const rimGeo = new THREE.TorusGeometry(0.46, 0.055, 14, 32);
+      const rimMat = new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.35 });
+      const rimMesh = new THREE.Mesh(rimGeo, rimMat);
+      rimMesh.rotation.x = Math.PI / 2;
+      rimMesh.position.copy(HOOP_POS);
+      courtGroup.add(rimMesh);
+
+      const birthdayBanner = createBirthdayBannerMesh();
+      courtGroup.add(birthdayBanner);
+
+      scene.add(courtGroup);
+    }
+
+    function createBallMesh() {
+      const ballGeo = new THREE.SphereGeometry(0.28, 20, 20);
+      const ballMat = new THREE.MeshStandardMaterial({
+        color: 0xf97316,
+        roughness: 0.4,
+        metalness: 0.1
+      });
+      ballMesh = new THREE.Mesh(ballGeo, ballMat);
+      ballMesh.position.set(0.38, 0.34, 2.42);
+      scene.add(ballMesh);
+
+      const auraGeo = new THREE.TorusGeometry(0.48, 0.055, 12, 28);
+      const auraMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.85
+      });
+      moveAuraMesh = new THREE.Mesh(auraGeo, auraMat);
+      moveAuraMesh.visible = false;
+      scene.add(moveAuraMesh);
+    }
+
+    function spawnShotEffectBurst(originVec, colorHex, isScoreBurst) {
+      const count = isScoreBurst ? 18 : 8;
+      const geo = new THREE.SphereGeometry(isScoreBurst ? 0.14 : 0.09, 10, 10);
+      for (let i = 0; i < count; i++) {
+        const mat = new THREE.MeshBasicMaterial({
+          color: colorHex,
+          transparent: true,
+          opacity: 1
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(originVec);
+        const angle = (i / count) * Math.PI * 2 + Math.random() * 0.4;
+        const speed = isScoreBurst ? 2.4 + Math.random() * 2.2 : 1.2 + Math.random() * 1.4;
+        scene.add(mesh);
+        shotParticles.push({
+          mesh,
+          vel: new THREE.Vector3(
+            Math.cos(angle) * speed,
+            1.4 + Math.random() * 2.0,
+            Math.sin(angle) * speed
+          ),
+          life: isScoreBurst ? 0.65 : 0.4,
+          maxLife: isScoreBurst ? 0.65 : 0.4
+        });
+      }
+    }
+
+    function updateShotParticles(dt) {
+      for (let i = shotParticles.length - 1; i >= 0; i--) {
+        const pt = shotParticles[i];
+        pt.life -= dt;
+        if (pt.life <= 0) {
+          scene.remove(pt.mesh);
+          shotParticles.splice(i, 1);
+          continue;
+        }
+        pt.mesh.position.addScaledVector(pt.vel, dt);
+        pt.vel.y -= 6.5 * dt;
+        const ratio = Math.max(0, pt.life / pt.maxLife);
+        pt.mesh.scale.setScalar(ratio);
+        if (pt.mesh.material) {
+          pt.mesh.material.opacity = ratio;
+        }
+      }
+    }
+
+    function initScene() {
+      const canvas = document.getElementById("three-canvas");
+      if (!canvas || typeof THREE === "undefined") return;
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x070c1a);
+
+      camera = new THREE.PerspectiveCamera(
+        48,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        100
+      );
+      camera.position.set(0, 9.2, 10.6);
+      camera.lookAt(0, 1.3, -2.2);
+
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+      scene.add(ambientLight);
+
+      const dirLight = new THREE.DirectionalLight(0xfffbeb, 0.9);
+      dirLight.position.set(5, 12, 7);
+      scene.add(dirLight);
+
+      buildHalfCourt();
+      createBallMesh();
+    }
+
+    function spawnTeamPlayers() {
+      for (const p of playerEntries) {
+        if (p.meshGroup && scene) {
+          scene.remove(p.meshGroup);
+        }
+      }
+      playerEntries = [];
+
+      const homeIds = selectedHomeIds.length === 3 ? selectedHomeIds : [7, 4, 1];
+      const awayIds = [25, 94, 133];
+
+      const homeStart = [
+        { x: 0, z: 2.2 },
+        { x: -3.0, z: 0.8 },
+        { x: 3.0, z: 0.8 }
+      ];
+      const awayStart = [
+        { x: 0, z: -1.6 },
+        { x: -2.4, z: -3.4 },
+        { x: 2.4, z: -3.4 }
+      ];
+
+      homeIds.forEach((pid, idx) => {
+        const spec = POKEMON_MAP.get(pid) || POKEMON_MAP.get(7);
+        const group = new THREE.Group();
+        const sprite = createPokemonSprite(spec);
+        group.add(sprite);
+
+        const ringGeo = new THREE.RingGeometry(0.56, 0.78, 32);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: 0x38bdf8,
+          side: THREE.DoubleSide
+        });
+        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        ringMesh.rotation.x = -Math.PI / 2;
+        ringMesh.position.y = 0.04;
+        group.add(ringMesh);
+
+        const label = createNameSprite(`主隊 #${idx + 1} ${spec.name}`, "rgba(15, 23, 42, 0.88)", "#38bdf8");
+        label.position.set(0, 2.05, 0);
+        group.add(label);
+
+        group.position.set(homeStart[idx].x, 0, homeStart[idx].z);
+        scene.add(group);
+
+        playerEntries.push({
+          id: `home_${idx}`,
+          team: "home",
+          slotIndex: idx,
+          spec,
+          pos: new THREE.Vector3(homeStart[idx].x, 0, homeStart[idx].z),
+          jumpOffset: 0,
+          jumpVel: 0,
+          meshGroup: group,
+          ringMesh
+        });
+      });
+
+      awayIds.forEach((pid, idx) => {
+        const spec = POKEMON_MAP.get(pid) || POKEMON_MAP.get(25);
+        const group = new THREE.Group();
+        const sprite = createPokemonSprite(spec);
+        group.add(sprite);
+
+        const ringGeo = new THREE.RingGeometry(0.56, 0.78, 32);
+        const ringMat = new THREE.MeshBasicMaterial({
+          color: 0xf87171,
+          side: THREE.DoubleSide
+        });
+        const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+        ringMesh.rotation.x = -Math.PI / 2;
+        ringMesh.position.y = 0.04;
+        group.add(ringMesh);
+
+        const label = createNameSprite(`對手 #${idx + 1} ${spec.name}`, "rgba(69, 10, 10, 0.88)", "#f87171");
+        label.position.set(0, 2.05, 0);
+        group.add(label);
+
+        group.position.set(awayStart[idx].x, 0, awayStart[idx].z);
+        scene.add(group);
+
+        playerEntries.push({
+          id: `away_${idx}`,
+          team: "away",
+          slotIndex: idx,
+          spec,
+          pos: new THREE.Vector3(awayStart[idx].x, 0, awayStart[idx].z),
+          jumpOffset: 0,
+          jumpVel: 0,
+          meshGroup: group,
+          ringMesh
+        });
+      });
+    }
+
+    function updateActionButtonLabel() {
+      const btn = document.getElementById("btn-pass-or-steal");
+      if (!btn) return;
+      btn.textContent = playerEntries.find((p) => p.id === ballOwnerId)?.team === "home"
+        ? "🤝 傳球"
+        : "🛡️ 搶球";
+    }
+
+    function resetPositions(nextOwnerId) {
+      isBallInFlight = false;
+      ballFlightMode = null;
+      ballFlightProgress = 0;
+      ballPassTargetId = null;
+      pendingShotWillScore = false;
+      opponentStealTimer = 0;
+      aiShotCooldown = 2.0;
+
+      const homeStart = [
+        { x: 0, z: 2.2 },
+        { x: -3.0, z: 0.8 },
+        { x: 3.0, z: 0.8 }
+      ];
+      const awayStart = [
+        { x: 0, z: -1.6 },
+        { x: -2.4, z: -3.4 },
+        { x: 2.4, z: -3.4 }
+      ];
+
+      for (const p of playerEntries) {
+        p.jumpOffset = 0;
+        p.jumpVel = 0;
+        if (p.team === "home") {
+          p.pos.set(homeStart[p.slotIndex].x, 0, homeStart[p.slotIndex].z);
+        } else {
+          p.pos.set(awayStart[p.slotIndex].x, 0, awayStart[p.slotIndex].z);
+        }
+        if (p.meshGroup) {
+          p.meshGroup.position.copy(p.pos);
+        }
+      }
+
+      ballOwnerId = nextOwnerId || "home_0";
+      if (ballOwnerId.startsWith("home_")) {
+        controlledHomeIndex = Number(ballOwnerId.split("_")[1]) || 0;
+      }
+      updateActionButtonLabel();
+    }
+
+    function launchBallFlight(startVec, targetVec, mode, durationSec, passTargetId) {
+      isBallInFlight = true;
+      ballFlightMode = mode;
+      ballFlightProgress = 0;
+      ballFlightDuration = durationSec || 0.65;
+      ballStartPos.copy(startVec);
+      ballTargetPos.copy(targetVec);
+      ballPassTargetId = passTargetId || null;
+    }
+
+    function handlePassOrSteal() {
+      if (isAtHomeScreen || isGameOver || isQuizOpen || isWaitingWrongAnswerAck || isBallInFlight) return;
+
+      const owner = playerEntries.find((p) => p.id === ballOwnerId);
+      const activeHome = playerEntries.find((p) => p.team === "home" && p.slotIndex === controlledHomeIndex)
+        || playerEntries.find((p) => p.team === "home");
+
+      if (owner && owner.team === "home") {
+        const teammates = playerEntries.filter((p) => p.team === "home" && p.id !== owner.id);
+        if (teammates.length === 0) return;
+        teammates.sort((a, b) => a.pos.distanceTo(owner.pos) - b.pos.distanceTo(owner.pos));
+        const targetMate = teammates[0];
+        controlledHomeIndex = targetMate.slotIndex;
+        const startVec = new THREE.Vector3(owner.pos.x, 1.2, owner.pos.z);
+        const endVec = new THREE.Vector3(targetMate.pos.x, 1.2, targetMate.pos.z);
+        launchBallFlight(startVec, endVec, "pass", 0.42, targetMate.id);
+        setStatusBanner(`🤝 ${targetMate.spec.name}`);
+      } else if (owner && owner.team === "away" && activeHome) {
+        const dist = activeHome.pos.distanceTo(owner.pos);
+        if (dist <= 2.3) {
+          ballOwnerId = activeHome.id;
+          opponentStealTimer = 0;
+          updateActionButtonLabel();
+          spawnShotEffectBurst(activeHome.pos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0x38bdf8, false);
+          setStatusBanner(`🛡️ ${activeHome.spec.name}`);
+        } else {
+          setStatusBanner("靠近對手再搶球");
+        }
+      }
+    }
+
+    function openShotQuiz() {
+      if (isAtHomeScreen || isGameOver || isQuizOpen || isWaitingWrongAnswerAck || isBallInFlight) return;
+
+      const owner = playerEntries.find((p) => p.id === ballOwnerId);
+      if (!owner || owner.team !== "home") {
+        setStatusBanner("球不在我方，請靠近對手按「搶球」");
+        return;
+      }
+
+      const shooter = owner;
+      controlledHomeIndex = shooter.slotIndex;
+      updateActionButtonLabel();
+
+      const is3 = isThreePointShot(shooter.pos);
+      pendingShotPoints = is3 ? 3 : 2;
+      pendingShotTeam = "home";
+
+      currentQuestion = pickNextQuestion(is3);
+      isQuizOpen = true;
+      isWaitingWrongAnswerAck = false;
+
+      const modal = document.getElementById("quiz-modal");
+      document.getElementById("quiz-shot-badge").textContent = is3 ? "三分球 (+3)" : "兩分球 (+2)";
+      document.getElementById("quiz-subject-badge").textContent = currentQuestion.subject;
+      document.getElementById("quiz-question-text").textContent = currentQuestion.question;
+      document.getElementById("quiz-wrong-feedback").classList.add("hidden");
+
+      const optBox = document.getElementById("quiz-options-container");
+      optBox.innerHTML = "";
+      const labels = ["A", "B", "C", "D"];
+
+      currentQuestion.options.forEach((optText, idx) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "action-btn w-full text-left px-4 py-3 bg-slate-800/95 hover:bg-slate-700 text-white border border-slate-600 text-sm sm:text-base";
+        btn.textContent = `${labels[idx]}. ${optText}`;
+        btn.addEventListener("click", () => {
+          if (!isQuizOpen || isWaitingWrongAnswerAck) return;
+          handleAnswerQuiz(optText, shooter);
+        });
+        optBox.appendChild(btn);
+      });
+
+      modal.classList.add("active");
+    }
+
+    function finishShotAnimation(scored) {
+      isBallInFlight = false;
+      ballFlightMode = null;
+      ballFlightProgress = 0;
+      ballPassTargetId = null;
+      if (moveAuraMesh) moveAuraMesh.visible = false;
+      if (ballMesh && ballMesh.material) ballMesh.material.color.setHex(0xf97316);
+
+      if (scored) {
+        if (pendingShotTeam === "home") {
+          homeScore += pendingShotPoints;
+          spawnShotEffectBurst(HOOP_POS.clone(), 0xfacc15, true);
+          setStatusBanner(`🎉 +${pendingShotPoints} 分！`);
+          resetPositions("away_0");
+        } else {
+          awayScore += pendingShotPoints;
+          spawnShotEffectBurst(HOOP_POS.clone(), 0xf87171, true);
+          setStatusBanner(`對手 +${pendingShotPoints} 分`);
+          resetPositions("home_0");
+        }
+        updateScoreboardUI();
+      } else {
+        spawnShotEffectBurst(HOOP_POS.clone(), 0x94a3b8, false);
+        const nextOwner = pendingShotTeam === "home" ? "away_0" : "home_0";
+        setStatusBanner(pendingShotTeam === "home" ? "答錯不入！" : "未命中！");
+        resetPositions(nextOwner);
+      }
+      pendingShotWillScore = false;
+    }
+
+    function handleAnswerQuiz(chosenOption, shooter) {
+      if (!isQuizOpen || !currentQuestion) return;
+      const isCorrect = String(chosenOption).trim() === String(currentQuestion.answer).trim();
+      const modal = document.getElementById("quiz-modal");
+
+      if (isCorrect) {
+        isQuizOpen = false;
+        isWaitingWrongAnswerAck = false;
+        modal.classList.remove("active");
+        const moveSpec = getSignatureMoveByPokemon(shooter?.spec);
+        currentShotArcHeight = moveSpec.arc || 2.3;
+        pendingShotWillScore = true;
+
+        if (shooter) {
+          shooter.jumpVel = 6.2;
+          if (moveAuraMesh) {
+            moveAuraMesh.visible = true;
+            moveAuraMesh.material.color.setHex(moveSpec.color);
+            moveAuraMesh.position.set(shooter.pos.x, 0.25, shooter.pos.z);
+          }
+        }
+        if (ballMesh && ballMesh.material) {
+          ballMesh.material.color.setHex(moveSpec.color);
+        }
+        showMoveEffectBanner(`⚡ ${moveSpec.name}`);
+
+        const startVec = new THREE.Vector3(shooter ? shooter.pos.x : 0, 1.5, shooter ? shooter.pos.z : 1.5);
+        launchBallFlight(startVec, HOOP_POS.clone(), "shot", 0.72, null);
+      } else {
+        isWaitingWrongAnswerAck = true;
+        document.getElementById("quiz-correct-answer-display").textContent = `正確答案：${currentQuestion.answer}`;
+        document.getElementById("quiz-wrong-feedback").classList.remove("hidden");
+      }
+    }
+
+    function acknowledgeWrongAnswer() {
+      if (!isWaitingWrongAnswerAck) return;
+      isWaitingWrongAnswerAck = false;
+      isQuizOpen = false;
+      currentQuestion = null;
+      document.getElementById("quiz-modal").classList.remove("active");
+      document.getElementById("quiz-wrong-feedback").classList.add("hidden");
+
+      const shooter = playerEntries.find((p) => p.id === ballOwnerId) || playerEntries.find((p) => p.team === "home");
+      currentShotArcHeight = 2.0;
+      pendingShotWillScore = false;
+      const startVec = new THREE.Vector3(shooter ? shooter.pos.x : 0, 1.4, shooter ? shooter.pos.z : 1.5);
+      const missTarget = new THREE.Vector3(
+        HOOP_POS.x + (Math.random() < 0.5 ? -1.1 : 1.1),
+        HOOP_POS.y - 0.25,
+        HOOP_POS.z + 0.5
+      );
+      launchBallFlight(startVec, missTarget, "shot", 0.65, null);
+    }
+
+    function updateScoreboardUI() {
+      const hEl = document.getElementById("hud-home-score");
+      const aEl = document.getElementById("hud-away-score");
+      const tEl = document.getElementById("hud-timer");
+      if (hEl) hEl.textContent = String(homeScore);
+      if (aEl) aEl.textContent = String(awayScore);
+      if (tEl) {
+        const sec = Math.max(0, Math.ceil(matchTimeLeft));
+        const mm = String(Math.floor(sec / 60)).padStart(2, "0");
+        const ss = String(sec % 60).padStart(2, "0");
+        tEl.textContent = `${mm}:${ss}`;
+      }
+    }
+
+    function updateMatchTimer(dt) {
+      if (isAtHomeScreen || isGameOver || isQuizOpen || isWaitingWrongAnswerAck) return;
+      matchTimeLeft = Math.max(0, matchTimeLeft - dt);
+      updateScoreboardUI();
+      if (matchTimeLeft <= 0) {
+        triggerGameOver();
+      }
+    }
+
+    function triggerGameOver() {
+      isGameOver = true;
+      isQuizOpen = false;
+      isWaitingWrongAnswerAck = false;
+      document.getElementById("quiz-modal").classList.remove("active");
+
+      const won = homeScore > awayScore;
+      const draw = homeScore === awayScore;
+      const badge = document.getElementById("gameover-badge");
+      const title = document.getElementById("gameover-title");
+      const scoreText = document.getElementById("gameover-score");
+      const unlockBox = document.getElementById("gameover-unlock-box");
+
+      scoreText.textContent = `主隊 ${homeScore} : ${awayScore} 對手`;
+
+      if (won) {
+        badge.textContent = "勝利";
+        title.textContent = "主隊獲勝！";
+        const lockedList = POKEMON_CATALOG.filter((p) => !unlockedPokemonIds.has(p.id));
+        if (lockedList.length > 0) {
+          const picked = lockedList[Math.floor(Math.random() * lockedList.length)];
+          unlockedPokemonIds.add(picked.id);
+          window.unlockedPokemonIds = unlockedPokemonIds;
+          if (typeof window.saveGameProgress === "function") {
+            window.saveGameProgress();
+          }
+          unlockBox.innerHTML = `<div class="font-extrabold text-amber-300">🎉 解鎖新寶可夢：${picked.name}（${picked.dexNo}）</div>`;
+        } else {
+          unlockBox.innerHTML = `<div class="font-extrabold text-emerald-300">全 1025 隻寶可夢已全數解鎖！</div>`;
+        }
+      } else if (draw) {
+        badge.textContent = "平手";
+        title.textContent = "平手";
+        unlockBox.innerHTML = `<div class="text-slate-300">再贏一場即可解鎖新寶可夢！</div>`;
+      } else {
+        badge.textContent = "結束";
+        title.textContent = "對手勝出";
+        unlockBox.innerHTML = `<div class="text-slate-300">再接再厲，贏得比賽即可解鎖新寶可夢！</div>`;
+      }
+
+      renderHomeScreen();
+      document.getElementById("gameover-modal").classList.add("active");
+    }
+
+    function startNewMatch(fromHome) {
+      if (selectedHomeIds.length !== 3) {
+        selectedHomeIds = [7, 4, 1];
+        window.selectedHomeIds = selectedHomeIds;
+      }
+      isAtHomeScreen = false;
+      isGameOver = false;
+      isQuizOpen = false;
+      isWaitingWrongAnswerAck = false;
+      matchTimeLeft = MATCH_DURATION_SECONDS;
+      homeScore = 0;
+      awayScore = 0;
+      usedMatchQuestionKeys.clear();
+      usedMatchQuestionIndices.clear();
+      subjectRotationIndex = 0;
+      opponentStealTimer = 0;
+
+      document.getElementById("home-screen").classList.remove("active");
+      document.getElementById("gameover-modal").classList.remove("active");
+      document.getElementById("dex-modal").classList.remove("active");
+      document.getElementById("quiz-modal").classList.remove("active");
+
+      spawnTeamPlayers();
+      resetPositions("home_0");
+      updateScoreboardUI();
+      setStatusBanner(fromHome ? "01:00" : "已重開");
+    }
+
+    function returnToHomeScreen() {
+      isAtHomeScreen = true;
+      isQuizOpen = false;
+      isWaitingWrongAnswerAck = false;
+      document.getElementById("quiz-modal").classList.remove("active");
+      document.getElementById("dex-modal").classList.remove("active");
+      document.getElementById("gameover-modal").classList.remove("active");
+      document.getElementById("home-screen").classList.add("active");
+      renderHomeScreen();
+    }
+
+    function swapControlledHomePlayer() {
+      if (isAtHomeScreen || isGameOver || isQuizOpen || isWaitingWrongAnswerAck) return;
+      const homePlayers = playerEntries.filter((p) => p.team === "home");
+      if (homePlayers.length === 0) return;
+
+      const owner = playerEntries.find((p) => p.id === ballOwnerId);
+      controlledHomeIndex = (controlledHomeIndex + 1) % homePlayers.length;
+      const nextPlayer = homePlayers.find((p) => p.slotIndex === controlledHomeIndex) || homePlayers[0];
+
+      if (owner && owner.team === "home" && !isBallInFlight) {
+        ballOwnerId = nextPlayer.id;
+        updateActionButtonLabel();
+      }
+      setStatusBanner(`🔄 ${nextPlayer.spec.name}`);
+    }
+
+    function toggleSelectHomePokemon(id) {
+      if (!unlockedPokemonIds.has(id)) return;
+      const idx = selectedHomeIds.indexOf(id);
+      if (idx !== -1) {
+        if (selectedHomeIds.length <= 1) return;
+        selectedHomeIds.splice(idx, 1);
+      } else {
+        if (selectedHomeIds.length >= 3) {
+          selectedHomeIds.shift();
+        }
+        selectedHomeIds.push(id);
+      }
+      window.selectedHomeIds = selectedHomeIds;
+      if (typeof window.saveGameProgress === "function") {
+        window.saveGameProgress();
+      }
+      renderHomeScreen();
+    }
+
+    function renderHomeScreen() {
+      window.unlockedPokemonIds = unlockedPokemonIds;
+      window.selectedHomeIds = selectedHomeIds;
+
+      const counterEl = document.getElementById("home-unlock-counter");
+      const selCountEl = document.getElementById("home-selected-count");
+      const slotsEl = document.getElementById("home-selected-slots");
+      const gridEl = document.getElementById("home-roster-grid");
+
+      if (counterEl) counterEl.textContent = `${unlockedPokemonIds.size}/1025`;
+      if (selCountEl) selCountEl.textContent = `(${selectedHomeIds.length}/3)`;
+
+      if (slotsEl) {
+        slotsEl.innerHTML = "";
+        for (let i = 0; i < 3; i++) {
+          const pid = selectedHomeIds[i];
+          const spec = pid ? POKEMON_MAP.get(pid) : null;
+          const card = document.createElement("div");
+          card.className = "p-3 rounded-2xl bg-slate-900/90 border border-amber-400/35 flex items-center gap-3";
+          if (spec) {
+            card.innerHTML = `
+              <span class="px-2 py-0.5 rounded-lg text-xs font-black bg-amber-400 text-slate-950">#${i + 1}</span>
+              <img src="${spec.sprite}" alt="${spec.name}" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-11 h-11 object-contain" />
+              <div class="min-w-0">
+                <div class="text-sm font-extrabold text-white truncate">${spec.name}</div>
+                <div class="text-xs text-slate-400">${spec.dexNo}</div>
+              </div>
+            `;
+            if (!KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
+              hydratePokemonNames([spec.id]);
+            }
+          } else {
+            card.innerHTML = `
+              <span class="px-2 py-0.5 rounded-lg text-xs font-black bg-slate-700 text-slate-300">#${i + 1}</span>
+              <div class="text-xs text-slate-400">未選擇</div>
+            `;
+          }
+          slotsEl.appendChild(card);
+        }
+      }
+
+      if (gridEl) {
+        gridEl.innerHTML = "";
+        const sortedCatalog = [...POKEMON_CATALOG].sort((a, b) => {
+          const aUn = unlockedPokemonIds.has(a.id) ? 0 : 1;
+          const bUn = unlockedPokemonIds.has(b.id) ? 0 : 1;
+          if (aUn !== bUn) return aUn - bUn;
+          return a.id - b.id;
+        });
+
+        for (const spec of sortedCatalog) {
+          const isUnlocked = unlockedPokemonIds.has(spec.id);
+          const isSelected = selectedHomeIds.includes(spec.id);
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = `pokemon-card p-3 flex flex-col items-center text-center gap-1.5 ${
+            !isUnlocked ? "locked-card" : ""
+          } ${isSelected ? "selected-home" : ""}`;
+
+          item.innerHTML = `
+            <div class="w-full flex items-center justify-between text-[11px] font-bold">
+              <span class="text-slate-400">${spec.dexNo}</span>
+              ${
+                isSelected
+                  ? `<span class="px-1.5 py-0.5 rounded bg-amber-400 text-slate-950 font-black">出賽</span>`
+                  : isUnlocked
+                  ? `<span class="text-emerald-400">已解鎖</span>`
+                  : `<span class="text-slate-500">未解鎖</span>`
+              }
+            </div>
+            <img src="${spec.sprite}" alt="${spec.name}" loading="lazy" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-16 h-16 object-contain ${!isUnlocked ? "grayscale brightness-50" : ""}" />
+            <div class="text-xs font-extrabold text-white line-clamp-1">${isUnlocked ? spec.name : spec.dexNo}</div>
+          `;
+
+          if (isUnlocked) {
+            item.addEventListener("click", () => toggleSelectHomePokemon(spec.id));
+            if (!KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
+              hydratePokemonNames([spec.id]);
+            }
+          }
+          gridEl.appendChild(item);
+        }
+      }
+    }
+
+    function openDexModal() {
+      const grid = document.getElementById("dex-grid");
+      const summary = document.getElementById("dex-unlock-summary");
+      if (summary) {
+        summary.textContent = `${unlockedPokemonIds.size} / 1025`;
+      }
+      if (grid) {
+        grid.innerHTML = "";
+        const idsToHydrate = [];
+        for (const spec of POKEMON_CATALOG) {
+          const isUnlocked = unlockedPokemonIds.has(spec.id);
+          if (isUnlocked && !KNOWN_POKEMON_NAMES[spec.id] && !fetchedRemotePokemonNames.has(spec.id)) {
+            idsToHydrate.push(spec.id);
+          }
+          const card = document.createElement("div");
+          card.className = `pokemon-card p-3 flex flex-col items-center text-center gap-1.5 ${
+            !isUnlocked ? "locked-card" : ""
+          }`;
+          card.innerHTML = `
+            <div class="w-full flex items-center justify-between text-[11px] font-bold">
+              <span class="text-slate-400">${spec.dexNo}</span>
+              <span class="${isUnlocked ? "text-emerald-400" : "text-slate-500"}">${isUnlocked ? "已解鎖" : "未解鎖"}</span>
+            </div>
+            <img src="${spec.sprite}" alt="${spec.name}" loading="lazy" onerror="this.onerror=null;this.src='${spec.fallbackSprite}';" class="w-16 h-16 object-contain ${!isUnlocked ? "grayscale brightness-50" : ""}" />
+            <div class="text-xs font-extrabold text-white line-clamp-1">${isUnlocked ? spec.name : spec.dexNo}</div>
+          `;
+          grid.appendChild(card);
+        }
+        if (idsToHydrate.length > 0) {
+          hydratePokemonNames(idsToHydrate);
+        }
+      }
+      document.getElementById("dex-modal").classList.add("active");
+    }
+
+    function closeDexModal() {
+      document.getElementById("dex-modal").classList.remove("active");
+    }
+
+    function getMoveInputVector() {
+      let ix = joystickState.vecX;
+      let iy = joystickState.vecY;
+      if (keysPressed.ArrowLeft || keysPressed.KeyA) ix -= 1;
+      if (keysPressed.ArrowRight || keysPressed.KeyD) ix += 1;
+      if (keysPressed.ArrowUp || keysPressed.KeyW) iy -= 1;
+      if (keysPressed.ArrowDown || keysPressed.KeyS) iy += 1;
+      const len = Math.hypot(ix, iy);
+      if (len > 1) {
+        ix /= len;
+        iy /= len;
+      }
+      return { x: ix, z: iy };
+    }
+
+    function updatePlayersAndAI(dt) {
+      if (isAtHomeScreen || isGameOver || isQuizOpen || isWaitingWrongAnswerAck) return;
+
+      const elapsed = performance.now() * 0.001;
+      const moveInput = getMoveInputVector();
+      const owner = playerEntries.find((p) => p.id === ballOwnerId);
+      const homeHasBall = Boolean(owner && owner.team === "home" && !isBallInFlight);
+
+      if (homeHasBall) {
+        opponentStealTimer += dt;
+        if (opponentStealTimer >= OPPONENT_STEAL_INTERVAL_SECONDS) {
+          opponentStealTimer = 0;
+          const awayPlayers = playerEntries.filter((p) => p.team === "away");
+          if (awayPlayers.length > 0) {
+            awayPlayers.sort((a, b) => a.pos.distanceTo(owner.pos) - b.pos.distanceTo(owner.pos));
+            const stealer = awayPlayers[0];
+            const approachDir = owner.pos.clone().sub(stealer.pos);
+            if (approachDir.length() > 0.7) {
+              approachDir.normalize();
+              stealer.pos.addScaledVector(approachDir, 1.35);
+              clampToCourt(stealer.pos);
+            }
+            stealer.jumpVel = 4.2;
+
+            if (Math.random() < OPPONENT_STEAL_CHANCE) {
+              ballOwnerId = stealer.id;
+              aiShotCooldown = 2.0;
+              updateActionButtonLabel();
+              spawnShotEffectBurst(stealer.pos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0xf87171, false);
+              setStatusBanner(`⚠️ 對手 ${stealer.spec.name} 搶球成功！`);
+            } else {
+              spawnShotEffectBurst(owner.pos.clone().add(new THREE.Vector3(0, 1.0, 0)), 0x38bdf8, false);
+              setStatusBanner(`🛡️ 防守成功！保住球權`);
+            }
+          }
+        }
+      } else {
+        opponentStealTimer = 0;
+      }
+
+      const activeHome = playerEntries.find((p) => p.team === "home" && p.slotIndex === controlledHomeIndex)
+        || playerEntries.find((p) => p.team === "home");
+
+      if (activeHome && (Math.abs(moveInput.x) > 0.02 || Math.abs(moveInput.z) > 0.02)) {
+        const speed = 5.8;
+        activeHome.pos.x += moveInput.x * speed * dt;
+        activeHome.pos.z += moveInput.z * speed * dt;
+        clampToCourt(activeHome.pos);
+      }
+
+      const homeAnchors = [
+        { x: 0, z: 2.2 },
+        { x: -2.9, z: 0.6 },
+        { x: 2.9, z: 0.6 }
+      ];
+      const awayAnchors = [
+        { x: 0, z: -1.6 },
+        { x: -2.5, z: -3.2 },
+        { x: 2.5, z: -3.2 }
+      ];
+
+      for (const p of playerEntries) {
+        if (p.team === "home") {
+          if (!activeHome || p.id !== activeHome.id) {
+            const anchor = homeAnchors[p.slotIndex] || homeAnchors[0];
+            const targetX = anchor.x + Math.sin(elapsed * 1.6 + p.slotIndex * 1.7) * 1.15;
+            const targetZ = anchor.z + Math.cos(elapsed * 1.3 + p.slotIndex * 1.2) * 0.85;
+            const toTarget = new THREE.Vector3(targetX - p.pos.x, 0, targetZ - p.pos.z);
+            if (toTarget.length() > 0.08) {
+              toTarget.normalize();
+              p.pos.addScaledVector(toTarget, 2.3 * dt);
+              clampToCourt(p.pos);
+            }
+          }
+        } else if (p.team === "away") {
+          const isBallCarrier = p.id === ballOwnerId;
+          if (isBallCarrier && !isBallInFlight) {
+            aiShotCooldown = Math.max(0, aiShotCooldown - dt);
+            const shootSpot = new THREE.Vector3(
+              Math.sin(elapsed * 1.2) * 1.4,
+              0,
+              -2.5
+            );
+            const distToSpot = p.pos.distanceTo(shootSpot);
+            if (distToSpot > 0.35) {
+              const dir = shootSpot.clone().sub(p.pos).normalize();
+              p.pos.addScaledVector(dir, 3.5 * dt);
+              clampToCourt(p.pos);
+            } else if (aiShotCooldown <= 0) {
+              aiShotCooldown = 2.5;
+              pendingShotTeam = "away";
+              pendingShotPoints = isThreePointShot(p.pos) ? 3 : 2;
+              pendingShotWillScore = Math.random() < 0.35;
+              currentShotArcHeight = 2.15;
+              p.jumpVel = 5.4;
+              const startVec = new THREE.Vector3(p.pos.x, 1.4, p.pos.z);
+              const endVec = pendingShotWillScore
+                ? HOOP_POS.clone()
+                : new THREE.Vector3(HOOP_POS.x + 1.0, HOOP_POS.y - 0.3, HOOP_POS.z + 0.4);
+              launchBallFlight(startVec, endVec, "shot", 0.7, null);
+            }
+          } else {
+            const anchor = awayAnchors[p.slotIndex] || awayAnchors[0];
+            const focusTarget = (activeHome && p.slotIndex === 0)
+              ? new THREE.Vector3(activeHome.pos.x * 0.75, 0, Math.max(-4.5, activeHome.pos.z - 1.6))
+              : new THREE.Vector3(
+                  anchor.x + Math.cos(elapsed * 1.5 + p.slotIndex * 2.1) * 1.35,
+                  0,
+                  anchor.z + Math.sin(elapsed * 1.4 + p.slotIndex * 1.5) * 0.95
+                );
+            const dir = focusTarget.clone().sub(p.pos);
+            if (dir.length() > 0.08) {
+              dir.normalize();
+              p.pos.addScaledVector(dir, 2.7 * dt);
+              clampToCourt(p.pos);
+            }
+          }
+        }
+
+        if (p.jumpOffset > 0 || p.jumpVel > 0) {
+          p.jumpOffset += p.jumpVel * dt;
+          p.jumpVel -= 18 * dt;
+          if (p.jumpOffset <= 0) {
+            p.jumpOffset = 0;
+            p.jumpVel = 0;
+          }
+        }
+        const idleBob = p.jumpOffset === 0 ? Math.abs(Math.sin(elapsed * 4.2 + p.slotIndex)) * 0.08 : 0;
+        if (p.meshGroup) {
+          p.meshGroup.position.set(p.pos.x, p.jumpOffset + idleBob, p.pos.z);
+        }
+        if (p.ringMesh) {
+          const isControlled = p.team === "home" && p.slotIndex === controlledHomeIndex;
+          const hasBall = p.id === ballOwnerId;
+          const scale = hasBall ? 1.24 : isControlled ? 1.12 : 1.0;
+          p.ringMesh.scale.setScalar(scale);
+        }
+      }
+
+      if (moveAuraMesh && moveAuraMesh.visible && activeHome) {
+        moveAuraMesh.position.set(activeHome.pos.x, 0.25, activeHome.pos.z);
+      }
+    }
+
+    function updateBall(dt) {
+      if (!ballMesh) return;
+
+      if (isBallInFlight) {
+        ballFlightProgress += dt / Math.max(0.1, ballFlightDuration);
+        const t = Math.min(1, ballFlightProgress);
+        ballMesh.position.lerpVectors(ballStartPos, ballTargetPos, t);
+
+        if (ballFlightMode === "shot") {
+          ballMesh.position.y += Math.sin(t * Math.PI) * currentShotArcHeight;
+        } else if (ballFlightMode === "pass") {
+          ballMesh.position.y += Math.sin(t * Math.PI) * 0.55;
+        }
+
+        if (t >= 1) {
+          const finishedMode = ballFlightMode;
+          const passTarget = ballPassTargetId;
+          isBallInFlight = false;
+          ballFlightMode = null;
+          ballFlightProgress = 0;
+          ballPassTargetId = null;
+
+          if (moveAuraMesh) moveAuraMesh.visible = false;
+          if (ballMesh.material) ballMesh.material.color.setHex(0xf97316);
+
+          if (finishedMode === "pass" && passTarget) {
+            ballOwnerId = passTarget;
+            updateActionButtonLabel();
+          } else if (finishedMode === "shot") {
+            finishShotAnimation(pendingShotWillScore);
+          }
+        }
+        return;
+      }
+
+      const owner = playerEntries.find((p) => p.id === ballOwnerId) || playerEntries[0];
+      if (owner) {
+        const sideOffset = owner.team === "home" ? 0.36 : -0.36;
+        ballMesh.position.set(owner.pos.x + sideOffset, 0.34 + owner.jumpOffset, owner.pos.z + 0.18);
+      }
+    }
+
+    let lastFrameTime = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const safeNow = typeof now === "number" && Number.isFinite(now) ? now : performance.now();
+      const rawDelta = (safeNow - lastFrameTime) / 1000;
+      const dt = rawDelta > 0 && rawDelta < 0.08 ? rawDelta : 0.016;
+      lastFrameTime = safeNow;
+
+      updateMatchTimer(dt);
+      updatePlayersAndAI(dt);
+      updateBall(dt);
+      updateShotParticles(dt);
+
+      if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+      }
+    }
+
+    function bindJoystickEvents() {
+      const zone = document.getElementById("joystick-zone");
+      const knob = document.getElementById("joystick-knob");
+      if (!zone || !knob) return;
+
+      function updateKnobFromClient(clientX, clientY) {
+        const rect = zone.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        let dx = clientX - cx;
+        let dy = clientY - cy;
+        const dist = Math.hypot(dx, dy);
+        const maxR = joystickState.maxRadius;
+        if (dist > maxR && dist > 0) {
+          dx = (dx / dist) * maxR;
+          dy = (dy / dist) * maxR;
+        }
+        knob.style.transform = `translate(${dx}px, ${dy}px)`;
+        joystickState.vecX = dx / maxR;
+        joystickState.vecY = dy / maxR;
+      }
+
+      function resetKnob() {
+        joystickState.active = false;
+        joystickState.pointerId = null;
+        joystickState.vecX = 0;
+        joystickState.vecY = 0;
+        knob.classList.remove("dragging");
+        knob.style.transform = "translate(0px, 0px)";
+      }
+
+      zone.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        joystickState.active = true;
+        joystickState.pointerId = e.pointerId;
+        knob.classList.add("dragging");
+        zone.setPointerCapture?.(e.pointerId);
+        updateKnobFromClient(e.clientX, e.clientY);
+      });
+
+      zone.addEventListener("pointermove", (e) => {
+        if (!joystickState.active || e.pointerId !== joystickState.pointerId) return;
+        e.preventDefault();
+        updateKnobFromClient(e.clientX, e.clientY);
+      });
+
+      zone.addEventListener("pointerup", (e) => {
+        if (e.pointerId === joystickState.pointerId) {
+          resetKnob();
+        }
+      });
+
+      zone.addEventListener("pointercancel", (e) => {
+        if (e.pointerId === joystickState.pointerId) {
+          resetKnob();
+        }
+      });
+    }
+
+    function bindEvents() {
+      document.getElementById("home-start-match-btn")?.addEventListener("click", () => startNewMatch(true));
+      document.getElementById("home-open-dex-btn")?.addEventListener("click", openDexModal);
+      document.getElementById("btn-home-screen")?.addEventListener("click", returnToHomeScreen);
+      document.getElementById("btn-swap-player")?.addEventListener("click", swapControlledHomePlayer);
+      document.getElementById("btn-open-dex")?.addEventListener("click", openDexModal);
+      document.getElementById("btn-close-dex")?.addEventListener("click", closeDexModal);
+      document.getElementById("btn-restart")?.addEventListener("click", () => startNewMatch(false));
+      document.getElementById("btn-pass-or-steal")?.addEventListener("click", handlePassOrSteal);
+      document.getElementById("btn-shoot")?.addEventListener("click", openShotQuiz);
+      document.getElementById("btn-ack-wrong-answer")?.addEventListener("click", acknowledgeWrongAnswer);
+      document.getElementById("btn-gameover-home")?.addEventListener("click", returnToHomeScreen);
+      document.getElementById("btn-gameover-rematch")?.addEventListener("click", () => startNewMatch(false));
+
+      bindJoystickEvents();
+
+      window.addEventListener("keydown", (e) => {
+        if (e.code in keysPressed) {
+          keysPressed[e.code] = true;
+        }
+      });
+
+      window.addEventListener("keyup", (e) => {
+        if (e.code in keysPressed) {
+          keysPressed[e.code] = false;
+        }
+      });
+
+      window.addEventListener("resize", () => {
+        if (!renderer || !camera) return;
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    window.renderHomeScreen = renderHomeScreen;
+
+    window.addEventListener("DOMContentLoaded", () => {
+      initScene();
+      spawnTeamPlayers();
+      renderHomeScreen();
+      updateScoreboardUI();
+      bindEvents();
+      lastFrameTime = performance.now();
+      requestAnimationFrame(animate);
+    });
+  </script>
+</body>
+</html>
